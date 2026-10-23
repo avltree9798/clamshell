@@ -27,7 +27,7 @@ struct GameView: View {
         init(game: GameLibrary.Game) {
             session = EmulationSession(romURL: game.url, saveURL: game.saveURL)
             presenter = Presenter(frames: session.frames)
-            audio = AudioOutput(ring: session.audio, sampleRate: NDS.descriptor.audioSampleRate)
+            audio = AudioOutput(ring: session.audio, sampleRate: session.coreType.descriptor.audioSampleRate)
             controllers = ControllerInput(input: session.input)
         }
 
@@ -44,10 +44,17 @@ struct GameView: View {
         }
     }
 
+    /// Native size of screen 0 (top) or 1 (bottom) for this game's console.
+    private func screenSize(_ index: Int) -> CGSize {
+        let screens = EmulationSession.coreType(for: game.url).descriptor.screens
+        return CGSize(width: screens[index].width, height: screens[index].height)
+    }
+
     var body: some View {
         GeometryReader { proxy in
             let layout = LayoutResolver.resolve(LayoutInput(
-                size: proxy.size, hinge: hinge, fold: fold, controllerConnected: controllerConnected))
+                size: proxy.size, hinge: hinge, fold: fold, controllerConnected: controllerConnected,
+                topScreenSize: screenSize(0), bottomScreenSize: screenSize(1)))
             ZStack(alignment: .topLeading) {
                 Color.black.ignoresSafeArea()
                 if let runtime, let presenter = runtime.presenter {
@@ -56,7 +63,8 @@ struct GameView: View {
                         .offset(x: layout.topScreen.minX, y: layout.topScreen.minY)
                     MetalScreen(presenter: presenter, screenIndex: 1) { point in
                         if let point {
-                            runtime.session.input.setTouch(x: Int(point.x * 255), y: Int(point.y * 191))
+                            let touch = screenSize(1)
+                            runtime.session.input.setTouch(x: Int(point.x * (touch.width - 1)), y: Int(point.y * (touch.height - 1)))
                         } else {
                             runtime.session.input.clearTouch()
                         }

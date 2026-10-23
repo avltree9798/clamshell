@@ -32,7 +32,7 @@ struct LibraryView: View {
             .toolbar {
                 Button("Import", systemImage: "plus") { importing = true }
             }
-            .fileImporter(isPresented: $importing, allowedContentTypes: [.ndsROM, .data], allowsMultipleSelection: true) { result in
+            .fileImporter(isPresented: $importing, allowedContentTypes: [.ndsROM, .homebrew3DSX, .data], allowsMultipleSelection: true) { result in
                 if case .success(let urls) = result { urls.forEach(library.importGame) }
             }
             .alert("Import failed", isPresented: .constant(library.importError != nil)) {
@@ -49,4 +49,5 @@ struct LibraryView: View {
 
 extension UTType {
     static let ndsROM = UTType(filenameExtension: "nds", conformingTo: .data) ?? .data
+    static let homebrew3DSX = UTType(filenameExtension: "3dsx", conformingTo: .data) ?? .data
 }

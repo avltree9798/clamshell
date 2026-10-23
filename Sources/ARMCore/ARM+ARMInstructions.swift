@@ -27,13 +27,21 @@
     static let softwareInterrupt: UInt8 = 66
     static let coprocessor: UInt8 = 67
     static let none: UInt8 = 68
+    // ARMv6 (ARM11) only.
+    static let multiplyAccumulateAccumulate: UInt8 = 69  // UMAAL
+    static let exclusive: UInt8 = 70                     // LDREX/STREX and their B, H, D forms
+    static let media: UInt8 = 71                         // parallel add/sub, pack, saturate, extend, reverse
+    static let coprocessorTransfer: UInt8 = 72           // LDC/STC/MCRR/MRRC: VFP loads, stores, VMOV pairs
+    static let coprocessorData: UInt8 = 73               // CDP: VFP arithmetic
 
     /// Class of an instruction from bits 27-20 (index bits 11-4) and 7-4 (index bits 3-0).
-    static func classify(_ index: Int) -> UInt8 {
+    static func classify(_ index: Int, v6: Bool) -> UInt8 {
         let op = UInt32(index >> 4) << 20 | UInt32(index & 0xF) << 4
         let opcode = UInt8((op >> 21) & 0xF)
         switch (op >> 25) & 7 {
         case 0:
+            if v6 && op & 0x0FF0_00F0 == 0x0040_0090 { return multiplyAccumulateAccumulate }
+            if v6 && op & 0x0F80_00F0 == 0x0180_0090 { return exclusive }
             if op & 0x0FC0_00F0 == 0x0000_0090 { return multiply }
             if op & 0x0F80_00F0 == 0x0080_0090 { return multiplyLong }
             if op & 0x0FB0_00F0 == 0x0100_0090 { return swap }
@@ -46,23 +54,24 @@
         case 2:
             return transferImmediate + UInt8((op >> 20) & 1) * 2 + UInt8((op >> 22) & 1)
         case 3:
-            if op & 0x10 != 0 { return undefined }
+            if op & 0x10 != 0 { return v6 ? media : undefined }
             return transferRegister + UInt8((op >> 20) & 1) * 2 + UInt8((op >> 22) & 1)
         case 4:
             return block
         case 5:
             return op & (1 << 24) != 0 ? branchLink : branch
         case 6:
-            return none  // LDC/STC: no coprocessor on the DS uses them
+            return v6 ? coprocessorTransfer : none  // no DS coprocessor uses LDC/STC
         default:
             if op & (1 << 24) != 0 { return softwareInterrupt }
-            return op & 0x10 != 0 ? coprocessor : none
+            if op & 0x10 != 0 { return coprocessor }
+            return v6 ? coprocessorData : none
         }
     }
 
-    static func makeTable() -> UnsafeMutablePointer<UInt8> {
+    static func makeTable(v6: Bool) -> UnsafeMutablePointer<UInt8> {
         let table = UnsafeMutablePointer<UInt8>.allocate(capacity: 4096)
-        for i in 0..<4096 { table[i] = classify(i) }
+        for i in 0..<4096 { table[i] = classify(i, v6: v6) }
         return table
     }
 }
@@ -71,9 +80,13 @@ extension ARM {
     @usableFromInline func executeARM(_ op: UInt32, address: UInt32) {
         let cond = op >> 28
         if cond != 0xE && !conditionPassed(cond) {
-            // ARMv5 "never" space holds unconditional instructions: BLX imm, PLD.
-            if cond == 0xF && isV5 && op & 0x0E00_0000 == 0x0A00_0000 {
-                blxImmediate(op, address: address)
+            // ARMv5 "never" space holds unconditional instructions: BLX imm, PLD, and on ARMv6 CPS, CLREX.
+            if cond == 0xF && isV5 {
+                if op & 0x0E00_0000 == 0x0A00_0000 {
+                    blxImmediate(op, address: address)
+                } else if isV6 {
+                    unconditional(op, address: address)
+                }
             }
             return
         }
@@ -151,8 +164,15 @@ extension ARM {
         case 65:
             regs[14] = address &+ 4
             branch(to: regs[15] &+ (op & 0x00FF_FFFF).signExtended(bits: 24) << 2)
-        case 66: softwareInterrupt((op >> 16) & 0xFF, returnAddress: address &+ 4)
-        case 67: coprocessorRegisterTransfer(op)
+        case 66:
+            // The DS BIOS takes its number from bits 16-23; the 3DS kernel from the low byte.
+            softwareInterrupt(isV6 ? op & 0xFF : (op >> 16) & 0xFF, returnAddress: address &+ 4)
+        case 67: coprocessorRegisterTransfer(op, address: address)
+        case 69: multiplyAccumulateAccumulate(op)
+        case 70: exclusiveTransfer(op)
+        case 71: media(op, address: address)
+        case 72: coprocessorTransfer(op, address: address)
+        case 73: coprocessorDataOperation(op, address: address)
         default: break
         }
     }
@@ -270,7 +290,8 @@ extension ARM {
             return
         }
         // User mode may only change flags. MSR never changes the T bit.
-        if cpsr & PSR.modeMask == ARMMode.user.rawValue { mask &= 0xFF00_0000 }
+        // On ARMv6 that includes the GE bits.
+        if cpsr & PSR.modeMask == ARMMode.user.rawValue { mask &= isV6 ? 0xFF0F_0000 : 0xFF00_0000 }
         mask &= ~PSR.t
         let value = (cpsr & ~mask) | (operand & mask)
         setCPSR(value | 0x10)  // bit 4 of the mode is always set
@@ -364,7 +385,7 @@ extension ARM {
         } else {
             var value = regs[rd]
             if rd == 15 { value &+= 4 }
-            if byte { bus.write8(address, UInt8(truncatingIfNeeded: value)) } else { bus.write32(address & ~3, value) }
+            if byte { bus.write8(address, UInt8(truncatingIfNeeded: value)) } else { storeWord(address, value) }
             if writeBack { setReg(rn, offsetAddress) }
         }
     }
@@ -397,7 +418,7 @@ extension ARM {
 
         switch kind {
         case 1:  // STRH
-            bus.write16(address & ~1, UInt16(truncatingIfNeeded: regs[rd]))
+            storeHalf(address, regs[rd])
             if writeBack { setReg(rn, offsetAddress) }
         case 2:  // LDRD (ARMv5TE)
             guard isV5 else { return }
@@ -503,8 +524,10 @@ extension ARM {
         enterException(vector: 0x0C, mode: .abort, returnAddress: address &+ 4)
     }
 
-    func coprocessorRegisterTransfer(_ op: UInt32) {
-        guard isV5, (op >> 8) & 0xF == 15 else { return }
+    func coprocessorRegisterTransfer(_ op: UInt32, address: UInt32) {
+        let coprocessor = (op >> 8) & 0xF
+        if isV6 && coprocessor & 0xE == 0xA { vfpRegisterTransfer(op, address: address); return }
+        guard isV5, coprocessor == 15 else { return }
         let cn = Int((op >> 16) & 0xF), cm = Int(op & 0xF), cp = Int((op >> 5) & 7)
         let rd = Int((op >> 12) & 0xF)
         if op & (1 << 20) != 0 {

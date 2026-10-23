@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import CTRCore
 import EmuKit
 import Foundation
 import NDSCore
@@ -12,7 +13,18 @@ import Synchronization
 /// `audio`. Pacing is audio-driven: the thread runs a frame whenever the audio
 /// ring drops below half full, so sound never starves and video follows it.
 final class EmulationSession: Sendable {
-    let frames = FrameSink(screens: NDS.descriptor.screens)
+    /// The core for a file: .3dsx homebrew runs on the 3DS core, everything else on the DS core.
+    static func system(for url: URL) -> SystemID {
+        url.pathExtension.lowercased() == "3dsx" ? .ctr : .nds
+    }
+
+    static func coreType(for url: URL) -> any EmulatorCore.Type {
+        system(for: url) == .ctr ? CTR.self : NDS.self
+    }
+
+    let system: SystemID
+    var coreType: any EmulatorCore.Type { system == .ctr ? CTR.self : NDS.self }
+    let frames: FrameSink
     let audio = AudioRing(frames: 4096)
     let input = InputState()
 
@@ -28,6 +40,8 @@ final class EmulationSession: Sendable {
     init(romURL: URL, saveURL: URL) {
         self.romURL = romURL
         self.saveURL = saveURL
+        system = Self.system(for: romURL)
+        frames = FrameSink(screens: Self.coreType(for: romURL).descriptor.screens)
     }
 
     var errorMessage: String? { lastError.withLock { $0 } }
@@ -47,20 +61,20 @@ final class EmulationSession: Sendable {
     func flushSave() { saveRequested.store(true, ordering: .relaxed) }
 
     private func run() {
-        let nds = NDS(frames: frames, audio: audio, input: input)
+        let core = coreType.init(frames: frames, audio: audio, input: input)
         do {
             let rom = try Data(contentsOf: romURL)
-            try nds.load(image: [UInt8](rom))
-            if let save = try? Data(contentsOf: saveURL) { nds.batterySave = [UInt8](save) }
+            try core.load(image: [UInt8](rom))
+            if let save = try? Data(contentsOf: saveURL) { core.batterySave = [UInt8](save) }
         } catch {
             lastError.withLock { $0 = "\(error)" }
             return
         }
 
-        let frameDuration = 1 / NDS.descriptor.frameRate
-        var lastSaved = nds.batterySave
+        let frameDuration = 1 / coreType.descriptor.frameRate
+        var lastSaved = core.batterySave
         while !stopped.load(ordering: .relaxed) {
-            nds.setLidClosed(lidClosed.load(ordering: .relaxed))
+            core.setLidClosed(lidClosed.load(ordering: .relaxed))
             // A closed lid keeps running: the game sees the hinge bit and sleeps itself.
             if paused.load(ordering: .relaxed) {
                 Thread.sleep(forTimeInterval: 0.05)
@@ -70,14 +84,14 @@ final class EmulationSession: Sendable {
                 Thread.sleep(forTimeInterval: frameDuration / 4)
                 continue
             }
-            nds.runFrame()
+            core.runFrame()
 
-            if saveRequested.exchange(false, ordering: .relaxed), let save = nds.batterySave, save != lastSaved {
+            if saveRequested.exchange(false, ordering: .relaxed), let save = core.batterySave, save != lastSaved {
                 writeSave(save)
                 lastSaved = save
             }
         }
-        if let save = nds.batterySave, save != lastSaved { writeSave(save) }
+        if let save = core.batterySave, save != lastSaved { writeSave(save) }
     }
 
     /// Writes to a temporary file and renames it, so a crash never leaves half a save.

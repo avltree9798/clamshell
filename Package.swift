@@ -28,7 +28,7 @@ let package = Package(
         .target(name: "ARMCore", swiftSettings: coreSettings),
         .target(name: "NDSCore", dependencies: ["EmuKit", "ARMCore"], swiftSettings: coreSettings),
         .target(name: "CTRCore", dependencies: ["EmuKit", "ARMCore"], swiftSettings: coreSettings),
-        .executableTarget(name: "ClamshellBench", dependencies: ["NDSCore"], swiftSettings: coreSettings),
+        .executableTarget(name: "ClamshellBench", dependencies: ["NDSCore", "CTRCore", "EmuKit"], swiftSettings: coreSettings),
         .testTarget(name: "EmuKitTests", dependencies: ["EmuKit"]),
         .testTarget(name: "ARMCoreTests", dependencies: ["ARMCore"]),
         .testTarget(name: "NDSCoreTests", dependencies: ["NDSCore", "ARMCore"]),

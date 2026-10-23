@@ -2,8 +2,8 @@
 
 A Nintendo DS emulator for iPhone and iPad, written in Swift and SwiftUI, built
 around iPhone Duo: hold it half-open and turned sideways, and it plays like a DS,
-with the top screen above the fold and the touch screen below it. 3DS support is
-planned as a second core.
+with the top screen above the fold and the touch screen below it. A second core
+runs Nintendo 3DS homebrew, and is growing towards games.
 
 Clamshell is free software under the GPLv3. You can build it yourself for free;
 the App Store version costs £5 and pays for development.
@@ -12,17 +12,24 @@ the App Store version costs £5 and pays for development.
 > memory map, timers, DMA, IPC, math unit, cartridge reads, touch input and an HLE
 > BIOS are written. The 2D and 3D graphics engines, sound and save memory are not
 > yet, so commercial games do not run. See the [spec](docs/SPEC.md) for the plan.
+>
+> **3DS:** the ARM11 interpreter (ARMv6K + VFPv2), an HLE Horizon kernel (threads,
+> synchronisation, memory, ~40 SVCs), the srv, APT, cfg, ptm, hid and gsp::Gpu
+> services and a .3dsx loader run 2D homebrew. Missing: the PICA200 3D GPU, DSP
+> audio, the file system, and retail titles.
 
 ## Layout
 
 | Path | What it is |
 | --- | --- |
 | `Sources/EmuKit` | The contract between cores and the app: `EmulatorCore`, frame/audio/input channels, save-state format, scheduler |
-| `Sources/NDSCore` | The DS core: CPUs, buses, hardware, HLE BIOS, direct boot |
-| `Sources/CTRCore` | The 3DS core (placeholder until milestone M6) |
-| `Sources/ClamshellBench` | The M0 interpreter benchmark |
+| `Sources/ARMCore` | The ARM interpreter shared by both cores: ARM7TDMI, ARM946E-S and ARM11 MPCore with VFPv2 |
+| `Sources/NDSCore` | The DS core: buses, hardware, HLE BIOS, direct boot |
+| `Sources/CTRCore` | The 3DS core: address space, HLE kernel and services, .3dsx loader, framebuffer output |
+| `Sources/ClamshellBench` | The interpreter benchmark for both consoles |
+| `Tools` | Test programs built with clang: an ARM11 self-test and a 3DS homebrew |
 | `App/Clamshell` | The SwiftUI app: library, game view, layouts, Metal presenter, audio, controllers |
-| `Tests` | Swift Testing suites for EmuKit and the DS core |
+| `Tests` | Swift Testing suites for EmuKit, the CPU and both cores |
 
 ## Building
 
