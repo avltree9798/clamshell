@@ -18,10 +18,10 @@ jobs:
           - "-Ounchecked -wmo -enforce-exclusivity=unchecked -cross-module-optimization"
     env:
       CLAMSHELL_FLAGS: ${{ matrix.flags }}
-      SWIFT_BACKTRACE: enable=yes,style=full,interactive=no
     steps:
       - uses: actions/checkout@v4
-      - run: swift build -c release --build-tests
+      - run: swift build -c release --build-tests 2>&1 | grep -E "error|warning: unsafe|Compiling|Build" | head -60; exit ${PIPESTATUS[0]}
+        shell: bash {0}
       - run: swift test -c release --skip-build --verbose 2>&1 | tail -150
         shell: bash {0}
       - run: swift test -c release --skip-build --disable-swift-testing --verbose 2>&1 | tail -80
