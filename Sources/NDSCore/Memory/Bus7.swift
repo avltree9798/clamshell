@@ -41,6 +41,7 @@ final class Bus7: ARMBus {
         switch a >> 24 {
         case 0x02: return s.mainRAM.read32(a)
         case 0x03: let (m, o) = wram(a); return m.read32(o)
+        case 0x06: return s.vramOffset7(a).map { s.vram.read32(UInt32($0)) } ?? 0
         case 0x04: return ioRead(a & ~3)
         case 0x08, 0x09, 0x0A: return 0xFFFF_FFFF
         default: return 0
@@ -51,6 +52,7 @@ final class Bus7: ARMBus {
         switch a >> 24 {
         case 0x02: return s.mainRAM.read16(a)
         case 0x03: let (m, o) = wram(a); return m.read16(o)
+        case 0x06: return s.vramOffset7(a).map { s.vram.read16(UInt32($0)) } ?? 0
         case 0x04: return UInt16(truncatingIfNeeded: ioRead(a & ~3) >> ((a & 2) * 8))
         case 0x08, 0x09, 0x0A: return 0xFFFF
         default: return 0
@@ -61,6 +63,7 @@ final class Bus7: ARMBus {
         switch a >> 24 {
         case 0x02: return s.mainRAM.read8(a)
         case 0x03: let (m, o) = wram(a); return m.read8(o)
+        case 0x06: return s.vramOffset7(a).map { s.vram.read8(UInt32($0)) } ?? 0
         case 0x04: return UInt8(truncatingIfNeeded: ioRead(a & ~3) >> ((a & 3) * 8))
         case 0x08, 0x09, 0x0A: return 0xFF
         default: return 0
@@ -82,6 +85,7 @@ final class Bus7: ARMBus {
         switch a >> 24 {
         case 0x02: s.mainRAM.write32(a, v)
         case 0x03: let (m, o) = wram(a); m.write32(o, v)
+        case 0x06: if let o = s.vramOffset7(a) { s.vram.write32(UInt32(o), v) }
         case 0x04: ioWrite(a & ~3, v, mask: 0xFFFF_FFFF)
         default: break
         }
@@ -91,6 +95,7 @@ final class Bus7: ARMBus {
         switch a >> 24 {
         case 0x02: s.mainRAM.write16(a, v)
         case 0x03: let (m, o) = wram(a); m.write16(o, v)
+        case 0x06: if let o = s.vramOffset7(a) { s.vram.write16(UInt32(o), v) }
         case 0x04:
             let shift = (a & 2) * 8
             ioWrite(a & ~3, UInt32(v) << shift, mask: 0xFFFF << shift)
@@ -117,7 +122,10 @@ final class Bus7: ARMBus {
         case 0x0400_0134: return extKeyIn << 16  // RCNT reads as 0
         case 0x0400_0138: return 0                // RTC: not yet emulated
         case 0x0400_01C0: return UInt32(s.spi.control) | UInt32(s.spi.readData()) << 16
-        case 0x0400_0240: return UInt32(s.vramcnt[2] & 0x80 != 0 ? 1 : 0) | UInt32(s.vramcnt[3] & 0x80 != 0 ? 2 : 0) | UInt32(s.wramcnt) << 8
+        case 0x0400_0240:
+            // VRAMSTAT: banks C and D mapped to the ARM7.
+            let c: UInt32 = s.vramcnt[2] & 0x87 == 0x82 ? 1 : 0, d: UInt32 = s.vramcnt[3] & 0x87 == 0x82 ? 2 : 0
+            return c | d | UInt32(s.wramcnt) << 8
         case 0x0400_0300: return postflg
         case 0x0400_0304: return powcnt2
         case 0x0400_0400..<0x0400_0520: return soundRegisters[Int((a - 0x0400_0400) / 4)]
