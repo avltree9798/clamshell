@@ -203,6 +203,15 @@ public final class ARM<Bus: ARMBus>: ARMRegisterFile {
 
     public func halt() { halted = true }
 
+    /// The register storage, for an external fast path that shares this layout (r0-r15 first).
+    public var registerStorage: UnsafeMutablePointer<UInt32> { regs }
+    /// CPSR without mode-change side effects, for a fast path that only changes flags and the T bit.
+    public var rawCPSR: UInt32 {
+        get { cpsr }
+        set { cpsr = newValue }
+    }
+    public func addRetired(_ count: UInt64) { instructionsRetired &+= count }
+
     /// Clears a halt without an interrupt (an OS kernel resuming a thread).
     public func resume() { halted = false }
 

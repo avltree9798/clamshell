@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import ARMCore
+import CARM11
 import EmuKit
 
 /// Nintendo 3DS core: the application ARM11 with a high-level emulated Horizon
@@ -120,7 +121,7 @@ public final class CTR: EmulatorCore {
             if kernel.currentThread == nil {
                 cpu.cycles = target  // every thread is waiting: skip ahead
             } else {
-                cpu.run(until: target)
+                runCPU(until: target)
             }
         }
         if cpu.cycles < frameEnd { cpu.cycles = frameEnd }
@@ -133,6 +134,28 @@ public final class CTR: EmulatorCore {
         let count = Int(audioPhase)
         audioPhase -= Double(count)
         for _ in 0..<count { audio.push(left: 0, right: 0) }
+    }
+
+    /// Runs ARM-state code in the C fast path, and everything it hands back (Thumb,
+    /// SVCs, VFP, system instructions) in the Swift interpreter.
+    private func runCPU(until target: UInt64) {
+        let regs = cpu.registerStorage
+        while cpu.cycles < target && !cpu.halted {
+            if cpu.rawCPSR & 0x20 != 0 {
+                cpu.run(until: target)  // Thumb: the interpreter returns when it switches back to ARM
+                continue
+            }
+            var state = CARM11State(regs: regs, pages: memory.cPageTable, cycles: cpu.cycles, target: target,
+                                    retired: 0, cpsr: cpu.rawCPSR)
+            let exit = carm11_run(&state)
+            cpu.cycles = state.cycles
+            cpu.rawCPSR = state.cpsr
+            cpu.addRetired(state.retired)
+            if exit == CARM11ExitSlow {
+                cpu.step()
+                cpu.cycles &+= 1
+            }
+        }
     }
 
     // MARK: - Display
