@@ -95,7 +95,12 @@ public final class NDS: EmulatorCore {
 
     /// The last few I/O addresses neither bus handles, per CPU, for diagnostics.
     private(set) var unhandledIO: [[UInt32]] = [[], []]
+    private(set) var unhandledSWI: [[UInt32]] = [[], []]
     private(set) var frameCount = 0
+
+    func noteUnhandledSWI(cpu: Int, _ number: UInt32) {
+        if !unhandledSWI[cpu].contains(number) { unhandledSWI[cpu].append(number) }
+    }
 
     func noteUnhandledIO(cpu: Int, _ address: UInt32) {
         guard !unhandledIO[cpu].contains(address) else { return }
@@ -129,6 +134,9 @@ public final class NDS: EmulatorCore {
                      "ipc sync \(hex(ipc.readSync(cpu: 0), 4))/\(hex(ipc.readSync(cpu: 1), 4)) fifo \(ipc.fifo[0].count)/\(ipc.fifo[1].count)"]
         if !unhandledIO[0].isEmpty { lines.append("io9? " + unhandledIO[0].map { hex($0) }.joined(separator: " ")) }
         if !unhandledIO[1].isEmpty { lines.append("io7? " + unhandledIO[1].map { hex($0) }.joined(separator: " ")) }
+        for cpu in 0..<2 where !unhandledSWI[cpu].isEmpty {
+            lines.append("swi\(cpu == 0 ? 9 : 7)? " + unhandledSWI[cpu].map { String($0, radix: 16) }.joined(separator: " "))
+        }
         return lines.joined(separator: "\n")
     }
 
@@ -142,6 +150,7 @@ public final class NDS: EmulatorCore {
     let math = MathUnit()
     let cartridge = Cartridge()
     let spi = SPIBus()
+    let rtc = RTC()
 
     // Display state shared by both CPUs.
     var vcount: UInt32 = 0

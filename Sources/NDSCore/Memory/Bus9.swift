@@ -114,7 +114,9 @@ final class Bus9: ARMBus {
     var irqCheckFlagsAddress: UInt32 { dtcmBase &+ 0x3FF8 }
 
     func hleSWI(_ number: UInt32, cpu: ARMRegisterFile) -> Bool {
-        HLEBIOS.call(number, cpu: cpu, bus: self, isARM9: true)
+        // There is no BIOS behind the vector, so an unknown call is skipped and noted.
+        if !HLEBIOS.call(number, cpu: cpu, bus: self, isARM9: true) { s.noteUnhandledSWI(cpu: 0, number) }
+        return true
     }
 
     // MARK: - Shared WRAM as the ARM9 sees it (WRAMCNT)

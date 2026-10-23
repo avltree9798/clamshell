@@ -37,7 +37,9 @@ final class Bus7: ARMBus {
     var irqCheckFlagsAddress: UInt32 { 0x0380_FFF8 }
 
     func hleSWI(_ number: UInt32, cpu: ARMRegisterFile) -> Bool {
-        HLEBIOS.call(number, cpu: cpu, bus: self, isARM9: false)
+        // There is no BIOS behind the vector, so an unknown call is skipped and noted.
+        if !HLEBIOS.call(number, cpu: cpu, bus: self, isARM9: false) { s.noteUnhandledSWI(cpu: 1, number) }
+        return true
     }
 
     func cp15Read(cn: Int, cm: Int, cp: Int) -> UInt32 { 0 }
@@ -139,7 +141,7 @@ final class Bus7: ARMBus {
         if let v = s.ioReadCommon(cpu: 1, a) { return v }
         switch a {
         case 0x0400_0134: return extKeyIn << 16  // RCNT reads as 0
-        case 0x0400_0138: return 0                // RTC: not yet emulated
+        case 0x0400_0138: return s.rtc.read()
         case 0x0400_01C0: return UInt32(s.spi.control) | UInt32(s.spi.readData()) << 16
         case 0x0400_0240:
             // VRAMSTAT: banks C and D mapped to the ARM7.
@@ -168,6 +170,10 @@ final class Bus7: ARMBus {
     func ioWrite(_ a: UInt32, _ v: UInt32, mask: UInt32) {
         if s.ioWriteCommon(cpu: 1, a, v, mask: mask) { return }
         switch a {
+        case 0x0400_0134:
+            break  // RCNT: the serial port is unused
+        case 0x0400_0138:
+            if mask & 0xFF != 0 { s.rtc.write(UInt8(truncatingIfNeeded: v)) }
         case 0x0400_01C0:
             if mask & 0xFFFF != 0 { s.spi.control = UInt16(truncatingIfNeeded: (UInt32(s.spi.control) & ~mask) | (v & mask)) }
             if mask & 0x00FF_0000 != 0 { s.spi.writeData(UInt8(truncatingIfNeeded: v >> 16)) }

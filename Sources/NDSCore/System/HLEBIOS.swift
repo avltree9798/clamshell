@@ -4,6 +4,7 @@
 // Nintendo BIOS image is needed or distributed.
 
 import ARMCore
+import Foundation
 
 enum HLEBIOS {
     /// Runs SWI `number`. Returns false for calls not implemented yet, which then
@@ -46,14 +47,114 @@ enum HLEBIOS {
             lz77(bus, source: r0, destination: r1, halfwords: false)
         case 0x12:  // LZ77UnCompReadNormalWrite16bit (for VRAM)
             lz77(bus, source: r0, destination: r1, halfwords: true)
+        case 0x13:  // HuffUnCompReadNormal
+            huffman(bus, source: r0, destination: r1)
         case 0x14:  // RLUnCompReadNormalWrite8bit
             runLength(bus, source: r0, destination: r1, halfwords: false)
         case 0x15:  // RLUnCompReadNormalWrite16bit
             runLength(bus, source: r0, destination: r1, halfwords: true)
+        case 0x16:  // Diff8bitUnFilterWrite8bit
+            unfilter(bus, source: r0, destination: r1, unit: 1, writeUnit: 1)
+        case 0x17:  // Diff8bitUnFilterWrite16bit
+            unfilter(bus, source: r0, destination: r1, unit: 1, writeUnit: 2)
+        case 0x18:  // Diff16bitUnFilter
+            unfilter(bus, source: r0, destination: r1, unit: 2, writeUnit: 2)
+        case 0x1A where !isARM9:  // GetSineTable
+            cpu.setReg(0, UInt32(Self.sineTable[Int(r0 & 0x3F)]))
+        case 0x1B where !isARM9:  // GetPitchTable
+            cpu.setReg(0, UInt32(Self.pitchTable[Int(min(r0, 0x2FF))]))
+        case 0x1C where !isARM9:  // GetVolumeTable
+            cpu.setReg(0, UInt32(Self.volumeTable[Int(min(r0, 0x2D3))]))
+        case 0x1F where !isARM9:  // CustomPost
+            bus.write32(0x0400_0300, r0)
         default:
             return false
         }
         return true
+    }
+
+    // The sound tables are computed from what they stand for, not copied from the BIOS.
+    // There is no sound unit yet, so close approximations are enough.
+
+    /// sin(i × 90° / 64) × 0x8000.
+    static let sineTable: [UInt16] = (0..<64).map { i in
+        UInt16(min((sin(Double(i) * .pi / 128) * 32768).rounded(), 0x7FFF))
+    }
+
+    /// (2^(i/768) − 1) × 0x10000.
+    static let pitchTable: [UInt16] = (0..<768).map { i in
+        UInt16((exp2(Double(i) / 768) - 1) * 65536)
+    }
+
+    /// 724 volume levels about 0.1 dB apart, folded into 0...127 the way the sound
+    /// driver pairs them with a channel divider.
+    static let volumeTable: [UInt8] = (0..<724).map { i in
+        var value = pow(10, Double(i - 723) / 200) * 128
+        while value >= 128 { value /= 2 }
+        return UInt8(min(value.rounded(.down), 127))
+    }
+
+    private static func huffman<B: ARMBus>(_ bus: B, source: UInt32, destination: UInt32) {
+        let header = bus.read32(source)
+        let bits = header & 0xF == 4 ? 4 : 8
+        let size = header >> 8
+        let treeSize = (UInt32(bus.read8(source &+ 4)) + 1) * 2
+        let root = source &+ 5
+        var stream = source &+ 4 &+ treeSize
+        var d = destination & ~3
+        var outWord: UInt32 = 0, outBits = 0
+        var written: UInt32 = 0
+        var node = root
+        var nodeValue = UInt32(bus.read8(node))
+        while written < size {
+            var word = bus.read32(stream)
+            stream &+= 4
+            for _ in 0..<32 where written < size {
+                let bit = word >> 31
+                word <<= 1
+                let offset = nodeValue & 0x3F
+                let child = (node & ~1) &+ offset * 2 &+ 2 &+ bit
+                let isLeaf = nodeValue & (bit == 0 ? 0x80 : 0x40) != 0
+                node = child
+                nodeValue = UInt32(bus.read8(node))
+                guard isLeaf else { continue }
+                outWord |= (nodeValue & (bits == 4 ? 0xF : 0xFF)) << UInt32(outBits)
+                outBits += bits
+                if outBits == 32 {
+                    bus.write32(d, outWord)
+                    d &+= 4
+                    written += 4
+                    outWord = 0
+                    outBits = 0
+                }
+                node = root
+                nodeValue = UInt32(bus.read8(node))
+            }
+        }
+    }
+
+    private static func unfilter<B: ARMBus>(_ bus: B, source: UInt32, destination: UInt32, unit: UInt32, writeUnit: UInt32) {
+        let size = bus.read32(source) >> 8
+        var s = source &+ 4, d = destination
+        var value: UInt32 = 0
+        var pendingLow: UInt32?
+        var done: UInt32 = 0
+        while done < size {
+            let delta = unit == 1 ? UInt32(bus.read8(s)) : UInt32(bus.read16(s))
+            s &+= unit
+            value = (value &+ delta) & (unit == 1 ? 0xFF : 0xFFFF)
+            done += unit
+            if writeUnit == unit {
+                if unit == 1 { bus.write8(d, UInt8(value)) } else { bus.write16(d, UInt16(value)) }
+                d &+= unit
+            } else if let low = pendingLow {
+                bus.write16(d, UInt16(low | value << 8))
+                d &+= 2
+                pendingLow = nil
+            } else {
+                pendingLow = value
+            }
+        }
     }
 
     private static func divide(_ cpu: ARMRegisterFile, numerator: Int32, denominator: Int32) {

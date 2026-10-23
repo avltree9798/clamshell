@@ -73,4 +73,55 @@ import Testing
         #expect(HLEBIOS.call(0x11, cpu: nds.arm9, bus: nds.bus9, isARM9: true))
         for i in 0..<8 { #expect(nds.bus9.read8(0x0200_1000 + UInt32(i)) == 0x41) }
     }
+
+    @Test func huffmanDecompression() {
+        // 8-bit data, 4 bytes. A one-node tree: bit 0 gives 0xAA, bit 1 gives 0x55.
+        // The stream 0110 decodes to AA 55 55 AA.
+        let nds = NDS()
+        let data: [UInt8] = [0x28, 0x04, 0x00, 0x00, 0x01, 0xC0, 0xAA, 0x55, 0x00, 0x00, 0x00, 0x60]
+        for (i, b) in data.enumerated() { nds.bus9.write8(0x0200_0000 + UInt32(i), b) }
+        nds.arm9.setReg(0, 0x0200_0000)
+        nds.arm9.setReg(1, 0x0200_1000)
+        #expect(HLEBIOS.call(0x13, cpu: nds.arm9, bus: nds.bus9, isARM9: true))
+        #expect(nds.bus9.read32(0x0200_1000) == 0xAA55_55AA)
+    }
+
+    @Test func diffUnfilter() {
+        let nds = NDS()
+        let data: [UInt8] = [0x81, 0x04, 0x00, 0x00, 1, 1, 2, 0xFF]
+        for (i, b) in data.enumerated() { nds.bus9.write8(0x0200_0000 + UInt32(i), b) }
+        nds.arm9.setReg(0, 0x0200_0000)
+        nds.arm9.setReg(1, 0x0200_1000)
+        #expect(HLEBIOS.call(0x16, cpu: nds.arm9, bus: nds.bus9, isARM9: true))
+        #expect(nds.bus9.read32(0x0200_1000) == 0x0304_0201)
+    }
+
+    /// Reads the date and time over the bit-banged RTC port, LSB first.
+    @Test func rtcReturnsTheTime() {
+        let nds = NDS()
+        func port(_ v: UInt8) { nds.bus7.write8(0x0400_0138, v) }
+        port(0x16)  // select low, clock high, writing
+        port(0x16 | 4)
+        // Command 0110 010 1 (read date and time), sent LSB first.
+        let command: UInt8 = 0x65
+        for bit in 0..<8 {
+            let b = (command >> UInt8(bit)) & 1
+            port(0x74 | b)       // clock low
+            port(0x76 | b)       // clock high: bit taken
+        }
+        var bytes: [UInt8] = []
+        for _ in 0..<7 {
+            var byte: UInt8 = 0
+            for bit in 0..<8 {
+                port(0x64)
+                port(0x66)
+                byte |= UInt8(nds.bus7.read8(0x0400_0138) & 1) << UInt8(bit)
+            }
+            bytes.append(byte)
+        }
+        port(0x16)
+        let expected = RTC.dateTime()
+        #expect(bytes[0] == expected[0] && bytes[1] == expected[1] && bytes[2] == expected[2])
+        #expect(bytes[1] >= 1 && bytes[1] <= 0x12)
+    }
 }
