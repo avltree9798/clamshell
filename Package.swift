@@ -4,9 +4,11 @@
 
 import PackageDescription
 
-// The cores are hot loops: build them without runtime safety checks in release.
+// The cores are hot loops. -O, not -Ounchecked: Swift 6.1 on arm64 miscompiles the
+// interpreter with -Ounchecked (release tests crash), and the cores already use
+// wrapping arithmetic, so -O measures no slower.
 let coreSettings: [SwiftSetting] = [
-    .unsafeFlags(["-Ounchecked", "-wmo", "-enforce-exclusivity=unchecked", "-Xfrontend", "-disable-llvm-merge-functions-pass",
+    .unsafeFlags(["-O", "-wmo", "-enforce-exclusivity=unchecked", "-Xfrontend", "-disable-llvm-merge-functions-pass",
                    "-cross-module-optimization"], .when(configuration: .release)),
 ]
 
