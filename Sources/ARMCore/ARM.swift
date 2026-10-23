@@ -35,28 +35,28 @@ public final class ARM<Bus: ARMBus>: ARMRegisterFile {
     //  16..<22  banked r13 per bank      22..<28  banked r14 per bank
     //  28..<34  SPSR per bank            34..<39  FIQ r8-r12   39..<44  user r8-r12
     @usableFromInline let regs: UnsafeMutablePointer<UInt32>
-    @usableFromInline var cpsr: UInt32 = ARMMode.supervisor.rawValue | PSR.i | PSR.f
+    @exclusivity(unchecked) @usableFromInline var cpsr: UInt32 = ARMMode.supervisor.rawValue | PSR.i | PSR.f
 
-    public var cycles: UInt64 = 0
-    public private(set) var halted = false
+    @exclusivity(unchecked) public var cycles: UInt64 = 0
+    @exclusivity(unchecked) public private(set) var halted = false
     /// IME && (IE & IF) != 0. Set by the interrupt controller.
-    public var irqLine = false
+    @exclusivity(unchecked) public var irqLine = false
     /// (IE & IF) != 0, which wakes a halted CPU even when IME is off.
-    public var wakeLine = false
+    @exclusivity(unchecked) public var wakeLine = false
     /// Base of the exception vectors: 0 on the ARM7, 0xFFFF0000 on the ARM9 by default.
-    public var exceptionBase: UInt32
+    @exclusivity(unchecked) public var exceptionBase: UInt32
     /// When true, SWIs and IRQ entry are handled in Swift and no BIOS image is needed.
-    public var hleBIOS = true
+    @exclusivity(unchecked) public var hleBIOS = true
     /// Instructions retired, for benchmarks.
-    public private(set) var instructionsRetired: UInt64 = 0
+    @exclusivity(unchecked) public private(set) var instructionsRetired: UInt64 = 0
 
     /// Cycles one instruction costs on the master clock. The ARM7 runs at half the ARM9 clock.
     @usableFromInline let cyclesPerInstruction: UInt64
 
     /// Set when the current instruction wrote r15, so `step` must not advance the PC.
-    @usableFromInline var branched = false
+    @exclusivity(unchecked) @usableFromInline var branched = false
 
-    @usableFromInline var intrWaitMask: UInt32 = 0
+    @exclusivity(unchecked) @usableFromInline var intrWaitMask: UInt32 = 0
 
     /// Address the HLE IRQ stub returns to. Inside the BIOS region, never executed.
     @usableFromInline let hleIRQReturn: UInt32
