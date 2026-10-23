@@ -274,8 +274,17 @@ static void build_tables(void) {
     decode_ready = 1;
 }
 
-#define RETIRE() do { cycles++; retired++; } while (0)
-#define NEXT(address) do { pc = (address); RETIRE(); goto dispatch; } while (0)
+#define RETIRE() do { cycles++; } while (0)
+// Each handler ends in its own copy of the common case of dispatch (same code page,
+// condition AL), so the host predicts each indirect jump from the handler it leaves.
+#define NEXT(address) do { \
+    pc = (address); cycles++; \
+    if (UNLIKELY(cycles >= target || (pc >> 12) != code_tag)) goto dispatch; \
+    op = load32(code_base + (pc & 0xFFF)); \
+    if (UNLIKELY(op >> 28 != 0xE)) goto conditional; \
+    next = pc + 4; \
+    goto *handlers[((op >> 16) & 0xFF0) | ((op >> 4) & 0xF)]; \
+} while (0)
 
 CARM11Exit carm11_run(CARM11State *s) {
     if (UNLIKELY(!decode_ready)) build_tables();
@@ -283,7 +292,7 @@ CARM11Exit carm11_run(CARM11State *s) {
     uint32_t pc = regs[15];
     uint64_t cycles = s->cycles;
     const uint64_t target = s->target;
-    uint64_t retired = 0;
+    const uint64_t start = cycles;
     uint32_t cpsr = s->cpsr;
     CARM11Exit exit_reason = CARM11ExitTarget;
     uint32_t op = 0;
@@ -303,6 +312,11 @@ CARM11Exit carm11_run(CARM11State *s) {
         &&k_mul, &&k_mull, &&k_half, &&k_bx, &&k_clz, &&k_ldr_imm, &&k_ldr_reg, &&k_media, &&k_block, &&k_b, &&k_bl,
     };
 #undef DP
+    // Handler addresses by decode index, so dispatch is one load and one jump.
+    static void *handlers[4096];
+    if (UNLIKELY(handlers[0] == NULL)) {
+        for (int i = 0; i < 4096; i++) handlers[i] = labels[decode_table[i]];
+    }
 
 dispatch:
     if (UNLIKELY(cycles >= target)) goto out;
@@ -314,6 +328,8 @@ dispatch:
             code_tag = pc >> 12;
         }
         op = load32(code_base + (pc & 0xFFF));
+    }
+conditional: {
         uint32_t cond = op >> 28;
         if (cond != 0xE) {
             if (UNLIKELY(cond == 0xF)) {
@@ -330,7 +346,7 @@ dispatch:
             if (!((condition_table[cpsr >> 28] >> cond) & 1)) NEXT(pc + 4);
         }
         next = pc + 4;
-        goto *labels[decode_table[((op >> 16) & 0xFF0) | ((op >> 4) & 0xF)]];
+        goto *handlers[((op >> 16) & 0xFF0) | ((op >> 4) & 0xF)];
     }
 
 #define DP_HANDLERS(n) \
@@ -565,6 +581,6 @@ out:
     regs[15] = pc;
     s->cpsr = cpsr;
     s->cycles = cycles;
-    s->retired += retired;
+    s->retired += cycles - start;
     return exit_reason;
 }
