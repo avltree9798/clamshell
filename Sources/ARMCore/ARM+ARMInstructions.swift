@@ -384,7 +384,7 @@ extension ARM {
             if rd == 15 { loadPC(value) } else { regs[rd] = value }
         } else {
             var value = regs[rd]
-            if rd == 15 { value &+= 4 }
+            if rd == 15 && !isV6 { value &+= 4 }  // ARM11 stores PC+8, older cores PC+12
             if byte { bus.write8(address, UInt8(truncatingIfNeeded: value)) } else { storeWord(address, value) }
             if writeBack { setReg(rn, offsetAddress) }
         }
@@ -486,7 +486,7 @@ extension ARM {
                 }
             } else {
                 var value = regs[i]
-                if i == 15 { value &+= 4 }
+                if i == 15 && !isV6 { value &+= 4 }
                 // Storing the base after it was written back stores the new value on ARMv4.
                 if i == rn && i != firstRegister && writeBack && !isV5 { value = finalBase }
                 bus.write32(address & ~3, value)

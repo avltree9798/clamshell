@@ -154,6 +154,11 @@ final class AddressSpace {
 
     // MARK: - Access
 
+    /// The page table as the C fast path sees it.
+    var cPageTable: UnsafePointer<UnsafeMutablePointer<UInt8>?> {
+        UnsafeRawPointer(pages).assumingMemoryBound(to: UnsafeMutablePointer<UInt8>?.self)
+    }
+
     @inline(__always) func pointer(_ address: UInt32) -> UnsafeMutableRawPointer? {
         guard let page = pages[Int(address >> 12)] else { return nil }
         return page + Int(address & 0xFFF)
