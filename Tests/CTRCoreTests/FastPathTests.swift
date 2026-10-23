@@ -83,37 +83,48 @@ struct SplitMix {
         }
     }
 
+    /// Two CPUs with the same random program, registers and memory.
+    static func setup(_ rng: inout SplitMix, round: Int, count: Int) -> (ARM<FlatBus>, FlatBus, ARM<FlatBus>, FlatBus) {
+        let reference = FlatBus()
+        // Code at 0x1000, data around 0x8000-0x20000.
+        for i in 0..<count { reference.write32(0x1000 + UInt32(i * 4), instruction(&rng)) }
+        for i in 0..<0x6000 { reference.write32(0x8000 + UInt32(i * 4), rng.next()) }
+        let fast = FlatBus(copying: reference)
+        let a = ARM(model: .arm11mpcore, bus: reference)
+        let b = ARM(model: .arm11mpcore, bus: fast)
+        for cpu in [a, b] {
+            cpu.directBoot(entry: 0x1000, stackSVC: 0xF_0000, stackIRQ: 0xE_0000, stackSYS: 0xF_0000)
+        }
+        var seed = SplitMix(state: UInt64(round))
+        for i in 0..<15 {
+            // Low registers point into the data area; the rest are random.
+            let v = i < 8 ? 0x8000 + seed.below(0x10000) : seed.next()
+            a.setReg(i, v)
+            b.setReg(i, v)
+        }
+        a.rawCPSR = (a.rawCPSR & 0x0FFF_FFFF) | rng.below(16) << 28
+        b.rawCPSR = a.rawCPSR
+        return (a, reference, b, fast)
+    }
+
+    static func pageTable(_ bus: FlatBus) -> [UnsafeMutablePointer<UInt8>?] {
+        var pages = [UnsafeMutablePointer<UInt8>?](repeating: nil, count: 1 << 20)
+        for p in 0..<(FlatBus.size >> 12) { pages[p] = (bus.memory + p * 4096).assumingMemoryBound(to: UInt8.self) }
+        return pages
+    }
+
+    static func inCode(_ cpu: ARM<FlatBus>, count: Int) -> Bool {
+        cpu.rawCPSR & 0x20 == 0 && cpu.pc >= 0x1000 && cpu.pc < 0x1000 + UInt32(count * 4)
+    }
+
     @Test func matchesSwiftInterpreter() {
         var rng = SplitMix(state: 0xC1A5_5E11)
+        let count = 64
         for round in 0..<300 {
-            let reference = FlatBus()
-            // Code at 0x1000, data around 0x8000-0x20000.
-            let count = 64
-            for i in 0..<count { reference.write32(0x1000 + UInt32(i * 4), Self.instruction(&rng)) }
-            for i in 0..<0x6000 { reference.write32(0x8000 + UInt32(i * 4), rng.next()) }
-            let fast = FlatBus(copying: reference)
-
-            let a = ARM(model: .arm11mpcore, bus: reference)
-            let b = ARM(model: .arm11mpcore, bus: fast)
-            for cpu in [a, b] {
-                cpu.directBoot(entry: 0x1000, stackSVC: 0xF_0000, stackIRQ: 0xE_0000, stackSYS: 0xF_0000)
-            }
-            var seed = SplitMix(state: UInt64(round))
-            for i in 0..<15 {
-                // Low registers point into the data area; the rest are random.
-                let v = i < 8 ? 0x8000 + seed.below(0x10000) : seed.next()
-                a.setReg(i, v)
-                b.setReg(i, v)
-            }
-            let flags = rng.below(16) << 28
-            a.rawCPSR = (a.rawCPSR & 0x0FFF_FFFF) | flags
-            b.rawCPSR = a.rawCPSR
-
-            var pages = [UnsafeMutablePointer<UInt8>?](repeating: nil, count: 1 << 20)
-            for p in 0..<(FlatBus.size >> 12) { pages[p] = (fast.memory + p * 4096).assumingMemoryBound(to: UInt8.self) }
-
+            let (a, reference, b, fast) = Self.setup(&rng, round: round, count: count)
+            let pages = Self.pageTable(fast)
             for step in 0..<count {
-                if a.rawCPSR & 0x20 != 0 || a.pc >= 0x1000 + UInt32(count * 4) || a.pc < 0x1000 { break }
+                if !Self.inCode(a, count: count) { break }
                 let pc = a.pc
                 a.step()
                 pages.withUnsafeBufferPointer { table in
@@ -135,14 +146,41 @@ struct SplitMix {
                     return
                 }
                 if a.rawCPSR != b.rawCPSR {
-                    Issue.record("round \(round) step \(step) op \(String(op, radix: 16)): cpsr swift \(String(a.rawCPSR, radix: 16)) c \(String(b.rawCPSR, radix: 16))")
+                    Issue.record("round \(round) step \(step) pc \(String(pc, radix: 16)) op \(String(op, radix: 16)): cpsr swift \(String(a.rawCPSR, radix: 16)) c \(String(b.rawCPSR, radix: 16))")
                     return
                 }
             }
-            if memcmp(reference.memory, fast.memory, FlatBus.size) != 0 {
-                Issue.record("round \(round): memory differs")
+        }
+    }
+
+    /// Whole runs, so the C path's own dispatch between instructions and its stop at the
+    /// cycle target are covered too.
+    @Test func runsToTheSameState() {
+        var rng = SplitMix(state: 0x5EED_0F_C0DE)
+        let count = 64
+        for round in 0..<300 {
+            let (a, reference, b, fast) = Self.setup(&rng, round: round, count: count)
+            let pages = Self.pageTable(fast)
+            var steps: UInt64 = 0
+            while steps < UInt64(count) && Self.inCode(a, count: count) { a.step(); steps += 1 }
+            pages.withUnsafeBufferPointer { table in
+                var state = CARM11State(regs: b.registerStorage, pages: table.baseAddress!, cycles: 0, target: steps,
+                                        retired: 0, cpsr: b.rawCPSR)
+                while state.cycles < steps {
+                    if state.cycles > 0 && !Self.inCode(b, count: count) { break }
+                    let exit = carm11_run(&state)
+                    b.rawCPSR = state.cpsr
+                    if exit == CARM11ExitSlow { b.step(); state.cycles += 1 }
+                    if exit == CARM11ExitThumb { break }
+                    state.cpsr = b.rawCPSR
+                }
+            }
+            for i in 0..<16 where a.reg(i) != b.reg(i) {
+                Issue.record("round \(round) after \(steps): r\(i) swift \(String(a.reg(i), radix: 16)) c \(String(b.reg(i), radix: 16))")
                 return
             }
+            #expect(a.rawCPSR == b.rawCPSR, "round \(round)")
+            #expect(memcmp(reference.memory, fast.memory, FlatBus.size) == 0, "round \(round)")
         }
     }
 }

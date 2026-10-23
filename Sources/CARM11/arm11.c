@@ -275,15 +275,30 @@ static void build_tables(void) {
 }
 
 #define RETIRE() do { cycles++; } while (0)
-// Each handler ends in its own copy of the common case of dispatch (same code page,
-// condition AL), so the host predicts each indirect jump from the handler it leaves.
-#define NEXT(address) do { \
-    pc = (address); cycles++; \
-    if (UNLIKELY(cycles >= target || (pc >> 12) != code_tag)) goto dispatch; \
+// `stop` is the earlier of the cycle target and the end of the current code page, so
+// sequential code needs one check per instruction. Each handler ends in its own copy
+// of the common dispatch path, so the host predicts each indirect jump from the
+// handler it leaves.
+#define STOP_FOR_PAGE() do { \
+    uint64_t page_end = cycles + ((0x1000u - (pc & 0xFFFu)) >> 2); \
+    stop = page_end < target ? page_end : target; \
+} while (0)
+#define DISPATCH_SAME_PAGE() do { \
     op = load32(code_base + (pc & 0xFFF)); \
     if (UNLIKELY(op >> 28 != 0xE)) goto conditional; \
     next = pc + 4; \
     goto *handlers[((op >> 16) & 0xFF0) | ((op >> 4) & 0xF)]; \
+} while (0)
+#define NEXT_SEQ() do { \
+    pc += 4; cycles++; \
+    if (UNLIKELY(cycles >= stop)) goto dispatch; \
+    DISPATCH_SAME_PAGE(); \
+} while (0)
+#define NEXT(address) do { \
+    pc = (address); cycles++; \
+    if (UNLIKELY(cycles >= target || (pc >> 12) != code_tag)) goto dispatch; \
+    STOP_FOR_PAGE(); \
+    DISPATCH_SAME_PAGE(); \
 } while (0)
 
 CARM11Exit carm11_run(CARM11State *s) {
@@ -293,6 +308,7 @@ CARM11Exit carm11_run(CARM11State *s) {
     uint64_t cycles = s->cycles;
     const uint64_t target = s->target;
     const uint64_t start = cycles;
+    uint64_t stop = 0;
     uint32_t cpsr = s->cpsr;
     CARM11Exit exit_reason = CARM11ExitTarget;
     uint32_t op = 0;
@@ -327,6 +343,7 @@ dispatch:
             if (code_base == NULL || (pc & 3)) goto slow;
             code_tag = pc >> 12;
         }
+        STOP_FOR_PAGE();
         op = load32(code_base + (pc & 0xFFF));
     }
 conditional: {
@@ -343,16 +360,16 @@ conditional: {
                 exit_reason = CARM11ExitThumb;
                 goto out;
             }
-            if (!((condition_table[cpsr >> 28] >> cond) & 1)) NEXT(pc + 4);
+            if (!((condition_table[cpsr >> 28] >> cond) & 1)) NEXT_SEQ();
         }
         next = pc + 4;
         goto *handlers[((op >> 16) & 0xFF0) | ((op >> 4) & 0xF)];
     }
 
 #define DP_HANDLERS(n) \
-    dpi_##n: if (!data_processing(&cpsr, regs, op, pc, &next, n, 0)) goto slow; NEXT(next); \
-    dps_##n: if (!data_processing(&cpsr, regs, op, pc, &next, n, 1)) goto slow; NEXT(next); \
-    dpr_##n: if (!data_processing(&cpsr, regs, op, pc, &next, n, 2)) goto slow; NEXT(next);
+    dpi_##n: if (!data_processing(&cpsr, regs, op, pc, &next, n, 0)) goto slow; if (next == pc + 4) NEXT_SEQ(); NEXT(next); \
+    dps_##n: if (!data_processing(&cpsr, regs, op, pc, &next, n, 1)) goto slow; if (next == pc + 4) NEXT_SEQ(); NEXT(next); \
+    dpr_##n: if (!data_processing(&cpsr, regs, op, pc, &next, n, 2)) goto slow; if (next == pc + 4) NEXT_SEQ(); NEXT(next);
     DP_HANDLERS(0) DP_HANDLERS(1) DP_HANDLERS(2) DP_HANDLERS(3) DP_HANDLERS(4) DP_HANDLERS(5) DP_HANDLERS(6) DP_HANDLERS(7)
     DP_HANDLERS(8) DP_HANDLERS(9) DP_HANDLERS(10) DP_HANDLERS(11) DP_HANDLERS(12) DP_HANDLERS(13) DP_HANDLERS(14) DP_HANDLERS(15)
 #undef DP_HANDLERS
@@ -364,7 +381,7 @@ k_mul: {
     if (op & (1u << 21)) { if (rn == 15) goto slow; result += regs[rn]; }
     regs[rd] = result;
     if (op & (1u << 20)) cpsr = nz(cpsr, result);
-    NEXT(next);
+    NEXT_SEQ();
 }
 
 k_mull: {
@@ -382,7 +399,7 @@ k_mull: {
         if (result >> 63) cpsr |= N_FLAG;
         if (result == 0) cpsr |= Z_FLAG;
     }
-    NEXT(next);
+    NEXT_SEQ();
 }
 
 k_half: {
@@ -426,7 +443,7 @@ k_half: {
             if (writesBack) regs[rn] = offsetAddress;
         }
     }
-    NEXT(next);
+    NEXT_SEQ();
 }
 
 k_bx: {
@@ -448,7 +465,7 @@ k_clz: {
     uint32_t rd = (op >> 12) & 0xF, rm = op & 0xF;
     if (rd == 15 || rm == 15 || (op & 0x000F0F00u) != 0x000F0F00u) goto slow;
     regs[rd] = regs[rm] ? (uint32_t)__builtin_clz(regs[rm]) : 32;
-    NEXT(next);
+    NEXT_SEQ();
 }
 
 k_ldr_imm:
@@ -492,7 +509,7 @@ k_ldr_reg: {
         if (byte) *p = (uint8_t)value; else store32(p, value);
         if (writesBack) regs[rn] = offsetAddress;
     }
-    NEXT(next);
+    NEXT_SEQ();
 }
 
 k_media: {
@@ -510,18 +527,18 @@ k_media: {
         default: goto slow;  // the 16-bit pair forms
         }
         regs[rd] = rn == 15 ? extended : regs[rn] + extended;
-        NEXT(next);
+        NEXT_SEQ();
     }
-    if ((op & 0x0FFF0FF0u) == 0x06BF0F30u) { regs[rd] = __builtin_bswap32(regs[rm]); NEXT(next); }
+    if ((op & 0x0FFF0FF0u) == 0x06BF0F30u) { regs[rd] = __builtin_bswap32(regs[rm]); NEXT_SEQ(); }
     if ((op & 0x0FFF0FF0u) == 0x06BF0FB0u) {
         uint32_t v = regs[rm];
         regs[rd] = ((v & 0x00FF00FFu) << 8) | ((v >> 8) & 0x00FF00FFu);
-        NEXT(next);
+        NEXT_SEQ();
     }
     if ((op & 0x0FFF0FF0u) == 0x06FF0FB0u) {
         uint32_t v = regs[rm];
         regs[rd] = (uint32_t)(int32_t)(int16_t)(((v & 0xFF) << 8) | ((v >> 8) & 0xFF));
-        NEXT(next);
+        NEXT_SEQ();
     }
     goto slow;
 }
@@ -565,7 +582,7 @@ k_block: {
         }
         if (writeback) regs[rn] = newBase;
     }
-    NEXT(next);
+    NEXT_SEQ();
 }
 
 k_bl:
