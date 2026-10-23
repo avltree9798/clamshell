@@ -21,8 +21,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: swift test
+      - run: swift test -c release
       # The benchmark that matters: Apple Silicon is much closer to an iPhone than a cloud x86 core.
-      - run: swift run -c release clamshell-bench
+      # Run under lldb so a crash prints a backtrace.
+      - run: swift build -c release --product clamshell-bench
+      - run: lldb --batch -o run -k bt -k "process kill" -k "quit 1" .build/release/clamshell-bench
 
   app-ios:
     name: iOS app
