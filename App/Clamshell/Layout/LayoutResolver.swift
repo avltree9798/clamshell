@@ -17,8 +17,9 @@ struct LayoutInput: Equatable {
     /// The fold's frame in the same coordinates as `size`, while it is active.
     var fold: CGRect?
     var controllerConnected = false
-    /// Native screen size, e.g. 256 × 192 for the DS.
-    var screenSize = CGSize(width: 256, height: 192)
+    /// Native screen sizes: 256 × 192 for both DS screens; 400 × 240 and 320 × 240 on the 3DS.
+    var topScreenSize = CGSize(width: 256, height: 192)
+    var bottomScreenSize = CGSize(width: 256, height: 192)
 }
 
 struct LayoutResult: Equatable {
@@ -66,12 +67,12 @@ enum LayoutResolver {
     static func clamshell(_ input: LayoutInput, fold: CGRect) -> LayoutResult {
         let upper = CGRect(x: 0, y: 0, width: input.size.width, height: fold.minY)
         let lower = CGRect(x: 0, y: fold.maxY, width: input.size.width, height: input.size.height - fold.maxY)
-        let top = fit(input.screenSize, in: upper.insetBy(dx: 8, dy: 8))
+        let top = fit(input.topScreenSize, in: upper.insetBy(dx: 8, dy: 8))
         let shoulderHeight: CGFloat = input.controllerConnected ? 0 : 28
         let controlWidth: CGFloat = input.controllerConnected ? 0 : min(lower.width * 0.17, 110)
         let screenArea = CGRect(x: controlWidth, y: lower.minY + shoulderHeight + 8,
                                 width: lower.width - controlWidth * 2, height: lower.height - shoulderHeight - 16)
-        let bottom = fit(input.screenSize, in: screenArea)
+        let bottom = fit(input.bottomScreenSize, in: screenArea)
         var result = LayoutResult(kind: .clamshell, topScreen: top, bottomScreen: bottom)
         if !input.controllerConnected {
             result.leftControls = CGRect(x: 0, y: bottom.minY, width: bottom.minX, height: bottom.height)
@@ -87,16 +88,16 @@ enum LayoutResolver {
     static func book(_ input: LayoutInput, fold: CGRect) -> LayoutResult {
         let left = CGRect(x: 0, y: 0, width: fold.minX, height: input.size.height)
         let right = CGRect(x: fold.maxX, y: 0, width: input.size.width - fold.maxX, height: input.size.height)
-        return LayoutResult(kind: .book, topScreen: fit(input.screenSize, in: left.insetBy(dx: 8, dy: 8)),
-                            bottomScreen: fit(input.screenSize, in: right.insetBy(dx: 8, dy: 8)))
+        return LayoutResult(kind: .book, topScreen: fit(input.topScreenSize, in: left.insetBy(dx: 8, dy: 8)),
+                            bottomScreen: fit(input.bottomScreenSize, in: right.insetBy(dx: 8, dy: 8)))
     }
 
     static func stacked(_ input: LayoutInput, controls: Bool) -> LayoutResult {
         let size = input.size
         let controlHeight: CGFloat = controls ? min(size.height * 0.28, 260) : 0
         let screensHeight = size.height - controlHeight
-        let top = fit(input.screenSize, in: CGRect(x: 0, y: 0, width: size.width, height: screensHeight / 2))
-        let bottom = fit(input.screenSize, in: CGRect(x: 0, y: screensHeight / 2, width: size.width, height: screensHeight / 2))
+        let top = fit(input.topScreenSize, in: CGRect(x: 0, y: 0, width: size.width, height: screensHeight / 2))
+        let bottom = fit(input.bottomScreenSize, in: CGRect(x: 0, y: screensHeight / 2, width: size.width, height: screensHeight / 2))
         var result = LayoutResult(kind: .stacked, topScreen: top, bottomScreen: bottom)
         if controls {
             let strip = CGRect(x: 0, y: screensHeight, width: size.width, height: controlHeight)
@@ -111,16 +112,16 @@ enum LayoutResolver {
     static func sideBySide(_ input: LayoutInput, kind: LayoutResult.Kind) -> LayoutResult {
         let half = input.size.width / 2
         return LayoutResult(kind: kind,
-                            topScreen: fit(input.screenSize, in: CGRect(x: 0, y: 0, width: half, height: input.size.height)),
-                            bottomScreen: fit(input.screenSize, in: CGRect(x: half, y: 0, width: half, height: input.size.height)))
+                            topScreen: fit(input.topScreenSize, in: CGRect(x: 0, y: 0, width: half, height: input.size.height)),
+                            bottomScreen: fit(input.bottomScreenSize, in: CGRect(x: half, y: 0, width: half, height: input.size.height)))
     }
 
     /// Phone held sideways: big top screen in the middle, touch screen small at the side.
     static func landscape(_ input: LayoutInput) -> LayoutResult {
         let size = input.size
         let side = size.width * 0.2
-        let top = fit(input.screenSize, in: CGRect(x: side, y: 0, width: size.width - side * 2, height: size.height))
-        let bottom = fit(input.screenSize, in: CGRect(x: size.width - side, y: 0, width: side, height: size.height / 2))
+        let top = fit(input.topScreenSize, in: CGRect(x: side, y: 0, width: size.width - side * 2, height: size.height))
+        let bottom = fit(input.bottomScreenSize, in: CGRect(x: size.width - side, y: 0, width: side, height: size.height / 2))
         var result = LayoutResult(kind: .landscape, topScreen: top, bottomScreen: bottom)
         result.leftControls = CGRect(x: 0, y: size.height * 0.4, width: side, height: size.height * 0.6)
         result.rightControls = CGRect(x: size.width - side, y: size.height * 0.5, width: side, height: size.height * 0.5)

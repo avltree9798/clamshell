@@ -29,7 +29,7 @@ final class GameLibrary {
 
     func refresh() {
         let files = (try? FileManager.default.contentsOfDirectory(at: gamesFolder, includingPropertiesForKeys: nil)) ?? []
-        games = files.filter { $0.pathExtension.lowercased() == "nds" }
+        games = files.filter { ["nds", "3dsx"].contains($0.pathExtension.lowercased()) }
             .compactMap(Self.describe)
             .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
     }
@@ -51,7 +51,11 @@ final class GameLibrary {
     }
 
     /// Reads the title and game code from the cartridge header, not from any online database.
+    /// Homebrew (.3dsx) is listed by file name.
     private static func describe(_ url: URL) -> Game? {
+        if url.pathExtension.lowercased() == "3dsx" {
+            return Game(url: url, title: url.deletingPathExtension().lastPathComponent, gameCode: "3DSX")
+        }
         guard let handle = try? FileHandle(forReadingFrom: url),
               let header = try? handle.read(upToCount: 16), header.count == 16 else { return nil }
         let title = String(decoding: header.prefix(12).prefix { $0 != 0 }, as: UTF8.self)

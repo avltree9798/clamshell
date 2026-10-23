@@ -203,6 +203,41 @@ public final class ARM<Bus: ARMBus>: ARMRegisterFile {
 
     public func halt() { halted = true }
 
+    /// Clears a halt without an interrupt (an OS kernel resuming a thread).
+    public func resume() { halted = false }
+
+    /// When false, `run(until:)` returns as soon as the CPU halts instead of idling to
+    /// the target, so a kernel can switch threads. The 3DS core clears it.
+    public var haltConsumesTime = true
+
+    // MARK: - Thread contexts (for an HLE kernel)
+
+    /// User-visible state of one thread: r0-r15, CPSR, VFP registers and FPSCR.
+    public struct Context: Sendable {
+        public var r = [UInt32](repeating: 0, count: 16)
+        public var cpsr: UInt32 = ARMMode.user.rawValue
+        public var vfp = [UInt32](repeating: 0, count: 32)
+        public var fpscr: UInt32 = 0
+        public init() {}
+    }
+
+    /// Saves the current thread. Assumes user or system mode (no banked registers in use).
+    public func saveContext(into context: inout Context) {
+        for i in 0..<16 { context.r[i] = regs[i] }
+        context.cpsr = cpsr
+        for i in 0..<32 { context.vfp[i] = vfp[i] }
+        context.fpscr = fpscr
+    }
+
+    public func loadContext(_ context: Context) {
+        for i in 0..<16 { regs[i] = context.r[i] }
+        cpsr = context.cpsr
+        for i in 0..<32 { vfp[i] = context.vfp[i] }
+        fpscr = context.fpscr
+        exclusiveAddress = nil
+        halted = false
+    }
+
     public func waitForInterrupt(mask: UInt32, discardOld: Bool) {
         let flagsAddress = bus.irqCheckFlagsAddress
         if discardOld {
@@ -272,7 +307,10 @@ public final class ARM<Bus: ARMBus>: ARMRegisterFile {
     public func run(until target: UInt64) {
         while cycles < target {
             if halted {
-                if wakeLine || irqLine { halted = false } else { cycles = target; return }
+                if wakeLine || irqLine { halted = false } else {
+                    if haltConsumesTime { cycles = target }
+                    return
+                }
             }
             if irqLine && cpsr & PSR.i == 0 {
                 branched = false
