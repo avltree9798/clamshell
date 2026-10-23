@@ -224,6 +224,7 @@ final class Bus9: ARMBus {
         case 0x0400_0300: return postflg
         case 0x0400_0304: return s.powcnt1
         case 0x0400_1000...0x0400_106C: return s.engineB.read(a - 0x0400_1000)
+        case 0x0400_0400...0x0400_06A3: return s.gpu3D.readGeometryRegister(a)
         default: return 0
         }
     }
@@ -259,6 +260,8 @@ final class Bus9: ARMBus {
         case 0x0400_0300: postflg = merge(postflg) & 3
         case 0x0400_0304: s.powcnt1 = merge(s.powcnt1) & 0x820F
         case 0x0400_1000...0x0400_106C: s.engineB.write(a - 0x0400_1000, v, mask: mask)
+        case 0x0400_0320...0x0400_03BF: s.gpu3D.writeRenderRegister(a, v, mask: mask)
+        case 0x0400_0400...0x0400_06A3: s.gpu3D.writeGeometryRegister(a, v, mask: mask)
         default: break
         }
     }

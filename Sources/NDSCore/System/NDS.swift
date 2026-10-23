@@ -116,6 +116,7 @@ public final class NDS: EmulatorCore {
     let vramMap = VRAMMap()
     var engineA: Engine2D!
     var engineB: Engine2D!
+    var gpu3D: GPU3D!
     var wramcnt: UInt8 = 3
     var lidClosed = false
     var frameStart: UInt64 = 0
@@ -137,6 +138,7 @@ public final class NDS: EmulatorCore {
         bus9 = Bus9(system: self)
         engineA = Engine2D(isA: true, system: self)
         engineB = Engine2D(isA: false, system: self)
+        gpu3D = GPU3D(system: self)
         bus7 = Bus7(system: self)
         arm9 = ARM(model: .arm946es, bus: bus9)
         arm7 = ARM(model: .arm7tdmi, bus: bus7)
@@ -183,6 +185,7 @@ public final class NDS: EmulatorCore {
         vramcnt = [UInt8](repeating: 0, count: 9)
         engineA.reset()
         engineB.reset()
+        gpu3D.reset()
     }
 
     public func setLidClosed(_ closed: Bool) { lidClosed = closed }
@@ -238,6 +241,7 @@ public final class NDS: EmulatorCore {
             if dispstat7 & (1 << 3) != 0 { irq7.raise(IRQ.vblank) }
             dma9.trigger(.vblank)
             dma7.trigger(.vblank)
+            gpu3D.vblank()
             presentFrame()
         } else if vcount == NDSClock.linesPerFrame - 1 {
             dispstat9 &= ~1

@@ -27,8 +27,6 @@ final class Engine2D {
     private let objMode: UnsafeMutablePointer<UInt8>
     private let objWindow: UnsafeMutablePointer<Bool>
     private let windowMasks: UnsafeMutablePointer<UInt8>
-    /// The 3D layer for this line, written by the 3D engine (engine A only).
-    let line3D: UnsafeMutablePointer<UInt32>
 
     static let opaque: UInt32 = 1 << 31
     /// 3D pixels also carry a 5-bit alpha in bits 16-20.
@@ -51,8 +49,6 @@ final class Engine2D {
         objWindow.initialize(repeating: false, count: 256)
         windowMasks = .allocate(capacity: 256)
         windowMasks.initialize(repeating: 0x3F, count: 256)
-        line3D = .allocate(capacity: 256)
-        line3D.initialize(repeating: 0, count: 256)
     }
 
     deinit {
@@ -63,7 +59,6 @@ final class Engine2D {
         objMode.deallocate()
         objWindow.deallocate()
         windowMasks.deallocate()
-        line3D.deallocate()
     }
 
     func reset() {
@@ -202,7 +197,7 @@ final class Engine2D {
             case .affine: renderAffine(bg, line, extended: false)
             case .extended: renderAffine(bg, line, extended: true)
             case .large: renderLarge(bg, line)
-            case .threeD: line.update(from: line3D, count: 256)
+            case .threeD: render3DLayer(y, line)
             }
             order.append(bg)
         }
@@ -213,6 +208,16 @@ final class Engine2D {
         if dispcnt & (1 << 12) != 0 { renderObjects(y) }
 
         compose(y, order: order, into: out)
+    }
+
+    /// BG0 showing the 3D picture, scrolled horizontally by BG0HOFS.
+    private func render3DLayer(_ y: Int, _ line: UnsafeMutablePointer<UInt32>) {
+        let source = s.gpu3D.colorBuffer + y * 256
+        let scroll = Int(Int16(truncatingIfNeeded: UInt16(hofs(0)) << 7) >> 7)
+        for x in 0..<256 {
+            let sx = x + scroll
+            line[x] = sx >= 0 && sx < 256 ? source[sx] : 0
+        }
     }
 
     // MARK: - Text backgrounds
