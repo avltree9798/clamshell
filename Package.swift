@@ -6,7 +6,7 @@ import PackageDescription
 
 // The cores are hot loops: build them without runtime safety checks in release.
 let coreSettings: [SwiftSetting] = [
-    .unsafeFlags(["-Ounchecked", "-wmo", "-enforce-exclusivity=unchecked"], .when(configuration: .release)),
+    .unsafeFlags(["-Ounchecked", "-wmo", "-enforce-exclusivity=unchecked", "-Xfrontend", "-disable-llvm-merge-functions-pass"], .when(configuration: .release)),
 ]
 
 let package = Package(

@@ -15,6 +15,15 @@ jobs:
       - run: swift test
       - run: swift run -c release clamshell-bench
 
+  cores-macos:
+    name: Cores on Apple Silicon
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift test
+      # The benchmark that matters: Apple Silicon is much closer to an iPhone than a cloud x86 core.
+      - run: swift run -c release clamshell-bench
+
   app-ios:
     name: iOS app
     runs-on: macos-15
