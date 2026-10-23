@@ -20,7 +20,39 @@ final class Bus9: ARMBus {
     private(set) var dtcmLimit: UInt32 = 0
     private(set) var itcmLimit: UInt32 = 0
 
-    init(system: NDS) { s = system }
+    /// RAM pages for the C fast path, rebuilt when the TCMs or WRAMCNT change.
+    let pages = PageMap()
+    private var mappedDTCM = 0..<0
+
+    init(system: NDS) {
+        s = system
+        rebuildPages()
+    }
+
+    /// Maps main RAM, shared WRAM and the TCMs as `read32` sees them. Fetches see the
+    /// same, except that main RAM is fetched even where DTCM covers it.
+    func rebuildPages() {
+        pages.clear(mappedDTCM.lowerBound, count: mappedDTCM.count)
+        pages.clear(0, count: 0x4000)
+        pages.map(0x2000, count: 0x1000, s.mainRAM, in: pages.data)
+        switch s.wramcnt & 3 {
+        case 0: pages.map(0x3000, count: 0x1000, s.sharedWRAM, in: pages.data)
+        case 1: pages.map(0x3000, count: 0x1000, s.sharedWRAM, offset: 0x4000, size: 0x4000, in: pages.data)
+        case 2: pages.map(0x3000, count: 0x1000, s.sharedWRAM, size: 0x4000, in: pages.data)
+        default: break
+        }
+        // ITCM wins over DTCM. A TCM that ends partway through a page leaves that page to the bus.
+        let dtcmFirst = Int(dtcmBase >> 12)
+        let dtcmCount = min(Int((dtcmLimit + 0xFFF) >> 12), PageMap.pageCount - dtcmFirst)
+        mappedDTCM = dtcmFirst..<(dtcmFirst + dtcmCount)
+        pages.map(dtcmFirst, count: Int(dtcmLimit >> 12), s.dtcm, in: pages.data)
+        if dtcmLimit & 0xFFF != 0 { pages.data[dtcmFirst + Int(dtcmLimit >> 12)] = nil }
+        pages.map(0, count: Int(itcmLimit >> 12), s.itcm, in: pages.data)
+        if itcmLimit & 0xFFF != 0 { pages.data[Int(itcmLimit >> 12)] = nil }
+
+        for page in [0..<0x4000, mappedDTCM] { for i in page { pages.code[i] = pages.data[i] } }
+        pages.map(0x2000, count: 0x1000, s.mainRAM, in: pages.code)
+    }
 
     // MARK: - CP15
 
@@ -46,6 +78,7 @@ final class Bus9: ARMBus {
         dtcmLimit = cp15Control & (1 << 16) != 0 ? dtcmSize : 0
         itcmLimit = cp15Control & (1 << 18) != 0 ? itcmSize : 0
         s.arm9?.exceptionBase = cp15Control & (1 << 13) != 0 ? 0xFFFF_0000 : 0
+        rebuildPages()
     }
 
     func cp15Read(cn: Int, cm: Int, cp: Int) -> UInt32 {

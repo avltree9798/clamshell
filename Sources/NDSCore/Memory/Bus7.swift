@@ -12,7 +12,26 @@ final class Bus7: ARMBus {
     var powcnt2: UInt32 = 0
     var soundRegisters = [UInt32](repeating: 0, count: 0x120 / 4)
 
-    init(system: NDS) { s = system }
+    /// RAM pages for the C fast path, rebuilt when WRAMCNT changes. The ARM7 fetches
+    /// what it reads, so one table serves both.
+    let pages = PageMap()
+
+    init(system: NDS) {
+        s = system
+        rebuildPages()
+    }
+
+    /// Maps main RAM, shared WRAM and ARM7 WRAM as `wram(_:)` sees them.
+    func rebuildPages() {
+        pages.map(0x2000, count: 0x1000, s.mainRAM, in: pages.data)
+        switch s.wramcnt & 3 {
+        case 0: pages.map(0x3000, count: 0x800, s.arm7WRAM, in: pages.data)
+        case 1: pages.map(0x3000, count: 0x800, s.sharedWRAM, size: 0x4000, in: pages.data)
+        case 2: pages.map(0x3000, count: 0x800, s.sharedWRAM, offset: 0x4000, size: 0x4000, in: pages.data)
+        default: pages.map(0x3000, count: 0x800, s.sharedWRAM, in: pages.data)
+        }
+        pages.map(0x3800, count: 0x800, s.arm7WRAM, in: pages.data)
+    }
 
     var irqHandlerPointer: UInt32 { 0x0380_FFFC }
     var irqCheckFlagsAddress: UInt32 { 0x0380_FFF8 }

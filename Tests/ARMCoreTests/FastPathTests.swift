@@ -2,16 +2,16 @@
 
 import Testing
 import ARMCore
-import CARM11
+import CARM
 import Foundation
 
 /// 1 MB of flat RAM at address 0; everything above reads as zero.
-final class FlatBus: ARMBus {
+final class PagedBus: ARMBus {
     static let size = 0x10_0000
-    let memory = UnsafeMutableRawPointer.allocate(byteCount: FlatBus.size, alignment: 4096)
+    let memory = UnsafeMutableRawPointer.allocate(byteCount: PagedBus.size, alignment: 4096)
     var swis: [UInt32] = []
 
-    init(copying other: FlatBus? = nil) {
+    init(copying other: PagedBus? = nil) {
         if let other { memory.copyMemory(from: other.memory, byteCount: Self.size) } else {
             memory.initializeMemory(as: UInt8.self, repeating: 0, count: Self.size)
         }
@@ -84,14 +84,15 @@ struct SplitMix {
     }
 
     /// Two CPUs with the same random program, registers and memory.
-    static func setup(_ rng: inout SplitMix, round: Int, count: Int) -> (ARM<FlatBus>, FlatBus, ARM<FlatBus>, FlatBus) {
-        let reference = FlatBus()
+    static func setup(_ model: ARM<PagedBus>.Model, _ rng: inout SplitMix, round: Int, count: Int)
+        -> (ARM<PagedBus>, PagedBus, ARM<PagedBus>, PagedBus) {
+        let reference = PagedBus()
         // Code at 0x1000, data around 0x8000-0x20000.
         for i in 0..<count { reference.write32(0x1000 + UInt32(i * 4), instruction(&rng)) }
         for i in 0..<0x6000 { reference.write32(0x8000 + UInt32(i * 4), rng.next()) }
-        let fast = FlatBus(copying: reference)
-        let a = ARM(model: .arm11mpcore, bus: reference)
-        let b = ARM(model: .arm11mpcore, bus: fast)
+        let fast = PagedBus(copying: reference)
+        let a = ARM(model: model, bus: reference)
+        let b = ARM(model: model, bus: fast)
         for cpu in [a, b] {
             cpu.directBoot(entry: 0x1000, stackSVC: 0xF_0000, stackIRQ: 0xE_0000, stackSYS: 0xF_0000)
         }
@@ -107,46 +108,51 @@ struct SplitMix {
         return (a, reference, b, fast)
     }
 
-    static func pageTable(_ bus: FlatBus) -> [UnsafeMutablePointer<UInt8>?] {
+    static func pageTable(_ bus: PagedBus) -> [UnsafeMutablePointer<UInt8>?] {
         var pages = [UnsafeMutablePointer<UInt8>?](repeating: nil, count: 1 << 20)
-        for p in 0..<(FlatBus.size >> 12) { pages[p] = (bus.memory + p * 4096).assumingMemoryBound(to: UInt8.self) }
+        for p in 0..<(PagedBus.size >> 12) { pages[p] = (bus.memory + p * 4096).assumingMemoryBound(to: UInt8.self) }
         return pages
     }
 
-    static func inCode(_ cpu: ARM<FlatBus>, count: Int) -> Bool {
+    static func inCode(_ cpu: ARM<PagedBus>, count: Int) -> Bool {
         cpu.rawCPSR & 0x20 == 0 && cpu.pc >= 0x1000 && cpu.pc < 0x1000 + UInt32(count * 4)
     }
 
-    @Test func matchesSwiftInterpreter() {
+    static func arch(_ model: ARM<PagedBus>.Model) -> UInt32 {
+        switch model { case .arm7tdmi: 4; case .arm946es: 5; case .arm11mpcore: 6 }
+    }
+
+    @Test(arguments: [ARM<PagedBus>.Model.arm7tdmi, .arm946es, .arm11mpcore])
+    func matchesSwiftInterpreter(_ model: ARM<PagedBus>.Model) {
         var rng = SplitMix(state: 0xC1A5_5E11)
         let count = 64
         for round in 0..<300 {
-            let (a, reference, b, fast) = Self.setup(&rng, round: round, count: count)
+            let (a, reference, b, fast) = Self.setup(model, &rng, round: round, count: count)
             let pages = Self.pageTable(fast)
             for step in 0..<count {
                 if !Self.inCode(a, count: count) { break }
                 let pc = a.pc
                 a.step()
                 pages.withUnsafeBufferPointer { table in
-                    var state = CARM11State(regs: b.registerStorage, pages: table.baseAddress!, cycles: 0, target: 1,
-                                            retired: 0, cpsr: b.rawCPSR)
-                    let exit = carm11_run(&state)
+                    var state = CARMState(regs: b.registerStorage, pages: table.baseAddress!, code_pages: table.baseAddress!, cycles: 0, target: 1,
+                                            retired: 0, cpsr: b.rawCPSR, arch: Self.arch(model))
+                    let exit = carm_run(&state)
                     b.rawCPSR = state.cpsr
-                    if exit == CARM11ExitSlow { b.step() }
+                    if exit == CARMExitSlow { b.step() }
                 }
                 let op = reference.read32(pc)
                 for i in 0..<16 where a.reg(i) != b.reg(i) {
-                    Issue.record("round \(round) step \(step) pc \(String(pc, radix: 16)) op \(String(op, radix: 16)): r\(i) swift \(String(a.reg(i), radix: 16)) c \(String(b.reg(i), radix: 16))")
+                    Issue.record("\(model) round \(round) step \(step) pc \(String(pc, radix: 16)) op \(String(op, radix: 16)): r\(i) swift \(String(a.reg(i), radix: 16)) c \(String(b.reg(i), radix: 16))")
                     return
                 }
-                if memcmp(reference.memory, fast.memory, FlatBus.size) != 0 {
+                if memcmp(reference.memory, fast.memory, PagedBus.size) != 0 {
                     var at = 0
                     while reference.memory.load(fromByteOffset: at, as: UInt8.self) == fast.memory.load(fromByteOffset: at, as: UInt8.self) { at += 1 }
-                    Issue.record("round \(round) step \(step) pc \(String(pc, radix: 16)) op \(String(op, radix: 16)): memory at \(String(at, radix: 16))")
+                    Issue.record("\(model) round \(round) step \(step) pc \(String(pc, radix: 16)) op \(String(op, radix: 16)): memory at \(String(at, radix: 16))")
                     return
                 }
                 if a.rawCPSR != b.rawCPSR {
-                    Issue.record("round \(round) step \(step) pc \(String(pc, radix: 16)) op \(String(op, radix: 16)): cpsr swift \(String(a.rawCPSR, radix: 16)) c \(String(b.rawCPSR, radix: 16))")
+                    Issue.record("\(model) round \(round) step \(step) pc \(String(pc, radix: 16)) op \(String(op, radix: 16)): cpsr swift \(String(a.rawCPSR, radix: 16)) c \(String(b.rawCPSR, radix: 16))")
                     return
                 }
             }
@@ -155,32 +161,33 @@ struct SplitMix {
 
     /// Whole runs, so the C path's own dispatch between instructions and its stop at the
     /// cycle target are covered too.
-    @Test func runsToTheSameState() {
+    @Test(arguments: [ARM<PagedBus>.Model.arm7tdmi, .arm946es, .arm11mpcore])
+    func runsToTheSameState(_ model: ARM<PagedBus>.Model) {
         var rng = SplitMix(state: 0x5EED_0F_C0DE)
         let count = 64
         for round in 0..<300 {
-            let (a, reference, b, fast) = Self.setup(&rng, round: round, count: count)
+            let (a, reference, b, fast) = Self.setup(model, &rng, round: round, count: count)
             let pages = Self.pageTable(fast)
             var steps: UInt64 = 0
             while steps < UInt64(count) && Self.inCode(a, count: count) { a.step(); steps += 1 }
             pages.withUnsafeBufferPointer { table in
-                var state = CARM11State(regs: b.registerStorage, pages: table.baseAddress!, cycles: 0, target: steps,
-                                        retired: 0, cpsr: b.rawCPSR)
+                var state = CARMState(regs: b.registerStorage, pages: table.baseAddress!, code_pages: table.baseAddress!, cycles: 0, target: steps,
+                                        retired: 0, cpsr: b.rawCPSR, arch: Self.arch(model))
                 while state.cycles < steps {
                     if state.cycles > 0 && !Self.inCode(b, count: count) { break }
-                    let exit = carm11_run(&state)
+                    let exit = carm_run(&state)
                     b.rawCPSR = state.cpsr
-                    if exit == CARM11ExitSlow { b.step(); state.cycles += 1 }
-                    if exit == CARM11ExitThumb { break }
+                    if exit == CARMExitSlow { b.step(); state.cycles += 1 }
+                    if exit == CARMExitThumb { break }
                     state.cpsr = b.rawCPSR
                 }
             }
             for i in 0..<16 where a.reg(i) != b.reg(i) {
-                Issue.record("round \(round) after \(steps): r\(i) swift \(String(a.reg(i), radix: 16)) c \(String(b.reg(i), radix: 16))")
+                Issue.record("\(model) round \(round) after \(steps): r\(i) swift \(String(a.reg(i), radix: 16)) c \(String(b.reg(i), radix: 16))")
                 return
             }
             #expect(a.rawCPSR == b.rawCPSR, "round \(round)")
-            #expect(memcmp(reference.memory, fast.memory, FlatBus.size) == 0, "round \(round)")
+            #expect(memcmp(reference.memory, fast.memory, PagedBus.size) == 0, "round \(round)")
         }
     }
 }

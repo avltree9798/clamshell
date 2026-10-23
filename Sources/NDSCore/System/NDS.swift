@@ -117,7 +117,12 @@ public final class NDS: EmulatorCore {
     var engineA: Engine2D!
     var engineB: Engine2D!
     var gpu3D: GPU3D!
-    var wramcnt: UInt8 = 3
+    var wramcnt: UInt8 = 3 {
+        didSet {
+            bus9?.rebuildPages()
+            bus7?.rebuildPages()
+        }
+    }
     var lidClosed = false
     var frameStart: UInt64 = 0
     private var audioPhase: Double = 0
@@ -197,8 +202,8 @@ public final class NDS: EmulatorCore {
         spi.touchPoint = input.touch
         while scheduler.now < target {
             let next = min(scheduler.nextEventTime, target, scheduler.now + maxSlice)
-            arm9.run(until: next)
-            arm7.run(until: next)
+            arm9.run(until: next, pages: bus9.pages.dataTable, code: bus9.pages.codeTable)
+            arm7.run(until: next, pages: bus7.pages.dataTable)
             scheduler.advance(to: next)
             while let event = scheduler.popDue() { handle(event) }
         }

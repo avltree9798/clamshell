@@ -25,15 +25,15 @@ let package = Package(
     targets: [
         .target(name: "EmuKit"),
         // The ARM interpreter shared by the DS (ARM7, ARM9) and 3DS (ARM11) cores.
-        .target(name: "ARMCore", swiftSettings: coreSettings),
+        .target(name: "ARMCore", dependencies: ["CARM"], swiftSettings: coreSettings),
         .target(name: "NDSCore", dependencies: ["EmuKit", "ARMCore"], swiftSettings: coreSettings),
-        // The 3DS CPU's fast path in C (ARM-state integer instructions straight from the page table).
-        .target(name: "CARM11", cSettings: [.unsafeFlags(["-O3"], .when(configuration: .release))]),
-        .target(name: "CTRCore", dependencies: ["EmuKit", "ARMCore", "CARM11"], swiftSettings: coreSettings),
+        // The ARM cores' fast path in C (ARM-state integer instructions straight from guest RAM).
+        .target(name: "CARM", cSettings: [.unsafeFlags(["-O3"], .when(configuration: .release))]),
+        .target(name: "CTRCore", dependencies: ["EmuKit", "ARMCore"], swiftSettings: coreSettings),
         .executableTarget(name: "ClamshellBench", dependencies: ["NDSCore", "CTRCore", "EmuKit"], swiftSettings: coreSettings),
         .testTarget(name: "EmuKitTests", dependencies: ["EmuKit"]),
-        .testTarget(name: "ARMCoreTests", dependencies: ["ARMCore"]),
+        .testTarget(name: "ARMCoreTests", dependencies: ["ARMCore", "CARM"]),
         .testTarget(name: "NDSCoreTests", dependencies: ["NDSCore", "ARMCore"]),
-        .testTarget(name: "CTRCoreTests", dependencies: ["CTRCore", "ARMCore", "CARM11"]),
+        .testTarget(name: "CTRCoreTests", dependencies: ["CTRCore", "ARMCore"]),
     ]
 )

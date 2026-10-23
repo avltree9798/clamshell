@@ -3,6 +3,12 @@
 // ARM7TDMI (ARMv4T), ARM946E-S (ARMv5TE) and ARM11 MPCore (ARMv6K + VFPv2)
 // interpreter. Written from the ARM Architecture Reference Manual and GBATEK.
 
+import CARM
+
+/// Pointers to the 4 KB pages of guest RAM over the whole address space, for the C
+/// fast path; nil where an access must go through the bus.
+public typealias ARMPageTable = UnsafePointer<UnsafeMutablePointer<UInt8>?>
+
 /// CPSR bits.
 @usableFromInline enum PSR {
     static let n: UInt32 = 1 << 31
@@ -210,7 +216,6 @@ public final class ARM<Bus: ARMBus>: ARMRegisterFile {
         get { cpsr }
         set { cpsr = newValue }
     }
-    public func addRetired(_ count: UInt64) { instructionsRetired &+= count }
 
     /// Clears a halt without an interrupt (an OS kernel resuming a thread).
     public func resume() { halted = false }
@@ -363,6 +368,37 @@ public final class ARM<Bus: ARMBus>: ARMRegisterFile {
 
     @inline(__always) func mustLeaveLoop(stateBit: UInt32) -> Bool {
         cpsr & PSR.t != stateBit || halted || (irqLine && cpsr & PSR.i == 0)
+    }
+
+    /// Like `run(until:)`, but ARM-state code runs in the C fast path, which fetches
+    /// through `code`, reads and writes guest RAM through `pages`, and hands anything
+    /// else back to `step()`.
+    public func run(until target: UInt64, pages: ARMPageTable, code: ARMPageTable? = nil) {
+        let arch: UInt32 = isV6 ? 6 : isV5 ? 5 : 4
+        while cycles < target {
+            if halted {
+                if wakeLine || irqLine { halted = false } else {
+                    if haltConsumesTime { cycles = target }
+                    return
+                }
+            }
+            if irqLine && cpsr & PSR.i == 0 {
+                branched = false
+                serviceIRQ()
+            }
+            if cpsr & PSR.t != 0 { runThumb(until: target); continue }
+            // The C path counts instructions, not cycles.
+            let count = (target - cycles + cyclesPerInstruction - 1) / cyclesPerInstruction
+            var state = CARMState(regs: regs, pages: pages, code_pages: code ?? pages, cycles: 0, target: count, retired: 0, cpsr: cpsr, arch: arch)
+            let exit = carm_run(&state)
+            cpsr = state.cpsr
+            cycles &+= state.cycles &* cyclesPerInstruction
+            instructionsRetired &+= state.retired
+            if exit == CARMExitSlow {
+                step()
+                cycles &+= cyclesPerInstruction
+            }
+        }
     }
 
     public func step() {
