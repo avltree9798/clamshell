@@ -4,7 +4,7 @@ import EmuKit
 
 /// The ARM9's view of memory, including its tightly coupled memories and CP15.
 final class Bus9: ARMBus {
-    unowned let s: NDS
+    unowned(unsafe) let s: NDS
 
     var postflg: UInt32 = 0
     var exmemcnt: UInt32 = 0
@@ -141,8 +141,15 @@ final class Bus9: ARMBus {
         }
     }
 
-    @inline(__always) func fetch32(_ a: UInt32) -> UInt32 { read32(a) }
-    @inline(__always) func fetch16(_ a: UInt32) -> UInt16 { read16(a) }
+    // Most code runs from main RAM, so test that first. ITCM ends below 0x02000000.
+    @inline(__always) func fetch32(_ a: UInt32) -> UInt32 {
+        if a >> 24 == 0x02 { return s.mainRAM.read32(a) }
+        return read32(a)
+    }
+    @inline(__always) func fetch16(_ a: UInt32) -> UInt16 {
+        if a >> 24 == 0x02 { return s.mainRAM.read16(a) }
+        return read16(a)
+    }
 
     /// The LCDC window onto all VRAM banks, 0x06800000-0x068A3FFF.
     @inline(__always) private func isLCDC(_ a: UInt32) -> Bool { a >= 0x0680_0000 && a < 0x068A_4000 }

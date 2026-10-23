@@ -5,7 +5,7 @@ import EmuKit
 /// The ARM7's view of memory: its own 64 KB WRAM, part of shared WRAM, and the
 /// sound, SPI, RTC and wireless hardware.
 final class Bus7: ARMBus {
-    unowned let s: NDS
+    unowned(unsafe) let s: NDS
 
     var postflg: UInt32 = 0
     var powcnt2: UInt32 = 0
@@ -66,8 +66,14 @@ final class Bus7: ARMBus {
         }
     }
 
-    @inline(__always) func fetch32(_ a: UInt32) -> UInt32 { read32(a) }
-    @inline(__always) func fetch16(_ a: UInt32) -> UInt16 { read16(a) }
+    @inline(__always) func fetch32(_ a: UInt32) -> UInt32 {
+        if a >= 0x0380_0000 && a < 0x0400_0000 { return s.arm7WRAM.read32(a) }
+        return read32(a)
+    }
+    @inline(__always) func fetch16(_ a: UInt32) -> UInt16 {
+        if a >= 0x0380_0000 && a < 0x0400_0000 { return s.arm7WRAM.read16(a) }
+        return read16(a)
+    }
 
     // MARK: - Writes
 

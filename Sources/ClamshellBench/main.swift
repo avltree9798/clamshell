@@ -4,6 +4,7 @@
 // runs. The spec's bar is 300 million on an A17 Pro.
 //
 //   swift run -c release clamshell-bench [game.nds] [frames]
+//   swift run -c release clamshell-bench [frames]
 //
 // With no game, it runs a built-in ARM loop that mixes ALU, load/store and
 // branch instructions, which is closer to game code than a tight NOP loop.
@@ -11,11 +12,12 @@
 import Foundation
 import NDSCore
 
-let arguments = CommandLine.arguments.dropFirst()
-let frames = arguments.dropFirst().first.flatMap(Int.init) ?? 600
+let arguments = CommandLine.arguments.dropFirst().filter { !$0.isEmpty }
+let path = arguments.first { Int($0) == nil }
+let frames = arguments.compactMap { Int($0) }.first ?? 600
 
 let nds = NDS()
-if let path = arguments.first {
+if let path {
     guard let data = FileManager.default.contents(atPath: path) else {
         print("cannot read \(path)")
         exit(1)

@@ -27,7 +27,8 @@ public final class ARM<Bus: ARMBus>: ARMRegisterFile {
     public let model: Model
     /// ARMv5TE instructions (BLX, CLZ, QADD, SMLAxy, LDRD) are only on the ARM9.
     @usableFromInline let isV5: Bool
-    @usableFromInline unowned(unsafe) let bus: Bus
+    // Strong, so calls through it need no retain: the bus never points back at the CPU strongly.
+    @usableFromInline let bus: Bus
 
     // Register storage, one allocation so the hot loop never touches Swift arrays.
     //   0..<16  visible r0-r15
