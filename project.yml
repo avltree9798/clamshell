@@ -1,0 +1,53 @@
+# Generates Clamshell.xcodeproj:  brew install xcodegen && xcodegen
+name: Clamshell
+options:
+  bundleIdPrefix: com.avltree9798
+  deploymentTarget:
+    iOS: "18.0"
+packages:
+  Clamshell:
+    path: .
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    DEVELOPMENT_TEAM: ""   # set your team to run on a device
+targets:
+  Clamshell:
+    type: application
+    platform: iOS
+    sources:
+      - App/Clamshell
+    dependencies:
+      - package: Clamshell
+        product: EmuKit
+      - package: Clamshell
+        product: NDSCore
+      - package: Clamshell
+        product: CTRCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.avltree9798.clamshell
+        TARGETED_DEVICE_FAMILY: "1,2"
+        # Define CLAMSHELL_HINGE_API when building with the iOS 27.1 SDK (iPhone Duo hinge APIs).
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited)"
+    info:
+      path: App/Clamshell/Info.plist
+      properties:
+        CFBundleDisplayName: Clamshell
+        UILaunchScreen: {}
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UIRequiresFullScreen: false
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        NSMicrophoneUsageDescription: Some games ask you to speak or blow into the microphone.
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: com.avltree9798.clamshell.nds
+            UTTypeDescription: Nintendo DS game
+            UTTypeConformsTo: [public.data]
+            UTTypeTagSpecification:
+              public.filename-extension: [nds]
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Nintendo DS game
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [com.avltree9798.clamshell.nds]

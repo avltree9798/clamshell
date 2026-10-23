@@ -1,0 +1,102 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+import EmuKit
+import GameController
+import NDSCore
+import SwiftUI
+
+/// Plays one game: two Metal screens placed by `LayoutResolver`, with
+/// on-screen controls unless a controller is connected.
+struct GameView: View {
+    let game: GameLibrary.Game
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var runtime: Runtime?
+    @State private var hinge: HingeState = .none
+    @State private var fold: CGRect?
+    @State private var controllerConnected = GCController.controllers().isEmpty == false
+
+    /// Session, presenter and audio for the lifetime of this view.
+    @MainActor final class Runtime {
+        let session: EmulationSession
+        let presenter: Presenter?
+        let audio: AudioOutput
+        let controllers: ControllerInput
+
+        init(game: GameLibrary.Game) {
+            session = EmulationSession(romURL: game.url, saveURL: game.saveURL)
+            presenter = Presenter(frames: session.frames)
+            audio = AudioOutput(ring: session.audio, sampleRate: NDS.descriptor.audioSampleRate)
+            controllers = ControllerInput(input: session.input)
+        }
+
+        func start() {
+            session.start()
+            presenter?.start()
+            audio.start()
+        }
+
+        func stop() {
+            session.stop()
+            presenter?.stop()
+            audio.stop()
+        }
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            let layout = LayoutResolver.resolve(LayoutInput(
+                size: proxy.size, hinge: hinge, fold: fold, controllerConnected: controllerConnected))
+            ZStack(alignment: .topLeading) {
+                Color.black.ignoresSafeArea()
+                if let runtime, let presenter = runtime.presenter {
+                    MetalScreen(presenter: presenter, screenIndex: 0)
+                        .frame(width: layout.topScreen.width, height: layout.topScreen.height)
+                        .offset(x: layout.topScreen.minX, y: layout.topScreen.minY)
+                    MetalScreen(presenter: presenter, screenIndex: 1) { point in
+                        if let point {
+                            runtime.session.input.setTouch(x: Int(point.x * 255), y: Int(point.y * 191))
+                        } else {
+                            runtime.session.input.clearTouch()
+                        }
+                    }
+                    .frame(width: layout.bottomScreen.width, height: layout.bottomScreen.height)
+                    .offset(x: layout.bottomScreen.minX, y: layout.bottomScreen.minY)
+
+                    if !controllerConnected {
+                        ControlsOverlay(layout: layout, input: runtime.session.input)
+                    }
+                }
+                Button("Close", systemImage: "xmark.circle.fill") { dismiss() }
+                    .labelStyle(.iconOnly)
+                    .font(.title2)
+                    .foregroundStyle(.white.opacity(0.6))
+                    .padding()
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
+        .readPosture(hinge: $hinge, fold: $fold)
+        .statusBarHidden()
+        .persistentSystemOverlays(.hidden)
+        .onAppear {
+            let r = Runtime(game: game)
+            runtime = r
+            r.start()
+        }
+        .onDisappear { runtime?.stop() }
+        .onChange(of: hinge) { _, newValue in
+            // The DS lid follows the hinge.
+            runtime?.session.setLidClosed(newValue == .closed)
+            if newValue == .closed { runtime?.session.flushSave() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            runtime?.session.setPaused(phase != .active)
+            if phase != .active { runtime?.session.flushSave() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .GCControllerDidConnect)) { _ in controllerConnected = true }
+        .onReceive(NotificationCenter.default.publisher(for: .GCControllerDidDisconnect)) { _ in
+            controllerConnected = !GCController.controllers().isEmpty
+        }
+    }
+}

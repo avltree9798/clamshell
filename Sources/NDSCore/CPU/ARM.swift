@@ -1,0 +1,414 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// ARM7TDMI (ARMv4T) and ARM946E-S (ARMv5TE) interpreter.
+// Written from the ARM Architecture Reference Manual and GBATEK.
+
+/// CPSR bits.
+@usableFromInline enum PSR {
+    static let n: UInt32 = 1 << 31
+    static let z: UInt32 = 1 << 30
+    static let c: UInt32 = 1 << 29
+    static let v: UInt32 = 1 << 28
+    static let q: UInt32 = 1 << 27
+    static let i: UInt32 = 1 << 7
+    static let f: UInt32 = 1 << 6
+    static let t: UInt32 = 1 << 5
+    static let modeMask: UInt32 = 0x1F
+}
+
+public enum ARMMode: UInt32 {
+    case user = 0x10, fiq = 0x11, irq = 0x12, supervisor = 0x13
+    case abort = 0x17, undefined = 0x1B, system = 0x1F
+}
+
+public final class ARM<Bus: ARMBus>: ARMRegisterFile {
+    public enum Model: Sendable { case arm7tdmi, arm946es }
+
+    public let model: Model
+    /// ARMv5TE instructions (BLX, CLZ, QADD, SMLAxy, LDRD) are only on the ARM9.
+    @usableFromInline let isV5: Bool
+    @usableFromInline unowned(unsafe) let bus: Bus
+
+    // Register storage, one allocation so the hot loop never touches Swift arrays.
+    //   0..<16  visible r0-r15
+    //  16..<22  banked r13 per bank      22..<28  banked r14 per bank
+    //  28..<34  SPSR per bank            34..<39  FIQ r8-r12   39..<44  user r8-r12
+    @usableFromInline let regs: UnsafeMutablePointer<UInt32>
+    @usableFromInline var cpsr: UInt32 = ARMMode.supervisor.rawValue | PSR.i | PSR.f
+
+    public var cycles: UInt64 = 0
+    public private(set) var halted = false
+    /// IME && (IE & IF) != 0. Set by the interrupt controller.
+    public var irqLine = false
+    /// (IE & IF) != 0, which wakes a halted CPU even when IME is off.
+    public var wakeLine = false
+    /// Base of the exception vectors: 0 on the ARM7, 0xFFFF0000 on the ARM9 by default.
+    public var exceptionBase: UInt32
+    /// When true, SWIs and IRQ entry are handled in Swift and no BIOS image is needed.
+    public var hleBIOS = true
+    /// Instructions retired, for benchmarks.
+    public private(set) var instructionsRetired: UInt64 = 0
+
+    /// Cycles one instruction costs on the master clock. The ARM7 runs at half the ARM9 clock.
+    @usableFromInline let cyclesPerInstruction: UInt64
+
+    /// Set when the current instruction wrote r15, so `step` must not advance the PC.
+    @usableFromInline var branched = false
+
+    @usableFromInline var intrWaitMask: UInt32 = 0
+
+    /// Address the HLE IRQ stub returns to. Inside the BIOS region, never executed.
+    @usableFromInline let hleIRQReturn: UInt32
+
+    public init(model: Model, bus: Bus) {
+        self.model = model
+        self.bus = bus
+        isV5 = model == .arm946es
+        exceptionBase = model == .arm946es ? 0xFFFF_0000 : 0
+        cyclesPerInstruction = model == .arm946es ? 1 : 2
+        hleIRQReturn = model == .arm946es ? 0xFFFF_0F00 : 0x0000_0F00
+        regs = .allocate(capacity: 44)
+        regs.initialize(repeating: 0, count: 44)
+    }
+
+    deinit { regs.deallocate() }
+
+    // MARK: - Register file
+
+    @inline(__always) public func reg(_ i: Int) -> UInt32 { regs[i] }
+
+    @inline(__always) public func setReg(_ i: Int, _ value: UInt32) {
+        if i == 15 { branch(to: value) } else { regs[i] = value }
+    }
+
+    public var pc: UInt32 { regs[15] }
+    public var thumb: Bool { cpsr & PSR.t != 0 }
+    public var mode: ARMMode? { ARMMode(rawValue: cpsr & PSR.modeMask) }
+    public var statusRegister: UInt32 { cpsr }
+
+    /// Jumps without changing state (ARM stays ARM, Thumb stays Thumb).
+    @inline(__always) @usableFromInline func branch(to address: UInt32) {
+        regs[15] = cpsr & PSR.t != 0 ? address & ~1 : address & ~3
+        branched = true
+    }
+
+    /// Jumps and selects ARM or Thumb from bit 0, as BX does.
+    @inline(__always) @usableFromInline func branchExchange(to address: UInt32) {
+        if address & 1 != 0 {
+            cpsr |= PSR.t
+            regs[15] = address & ~1
+        } else {
+            cpsr &= ~PSR.t
+            regs[15] = address & ~3
+        }
+        branched = true
+    }
+
+    /// Loads into r15: ARMv5 interworks on bit 0, ARMv4 does not.
+    @inline(__always) @usableFromInline func loadPC(_ value: UInt32) {
+        if isV5 { branchExchange(to: value) } else { branch(to: value) }
+    }
+
+    @inline(__always) static func bankIndex(_ mode: UInt32) -> Int {
+        switch mode {
+        case 0x11: return 1
+        case 0x12: return 2
+        case 0x13: return 3
+        case 0x17: return 4
+        case 0x1B: return 5
+        default: return 0  // user, system
+        }
+    }
+
+    @usableFromInline func switchMode(_ newMode: UInt32) {
+        let oldMode = cpsr & PSR.modeMask
+        if oldMode == newMode { return }
+        let oldBank = Self.bankIndex(oldMode), newBank = Self.bankIndex(newMode)
+        if oldBank != newBank {
+            regs[16 + oldBank] = regs[13]
+            regs[22 + oldBank] = regs[14]
+            if oldMode == 0x11 {
+                for i in 0..<5 { regs[34 + i] = regs[8 + i]; regs[8 + i] = regs[39 + i] }
+            }
+            if newMode == 0x11 {
+                for i in 0..<5 { regs[39 + i] = regs[8 + i]; regs[8 + i] = regs[34 + i] }
+            }
+            regs[13] = regs[16 + newBank]
+            regs[14] = regs[22 + newBank]
+        }
+        cpsr = (cpsr & ~PSR.modeMask) | newMode
+    }
+
+    @usableFromInline var hasSPSR: Bool { Self.bankIndex(cpsr & PSR.modeMask) != 0 }
+
+    @usableFromInline var spsr: UInt32 {
+        get { hasSPSR ? regs[28 + Self.bankIndex(cpsr & PSR.modeMask)] : cpsr }
+        set { if hasSPSR { regs[28 + Self.bankIndex(cpsr & PSR.modeMask)] = newValue } }
+    }
+
+    /// Writes the whole CPSR, switching register banks if the mode changes.
+    @usableFromInline func setCPSR(_ value: UInt32) {
+        switchMode(value & PSR.modeMask)
+        cpsr = value
+    }
+
+    /// Sets up registers as the BIOS leaves them before jumping to a game (direct boot).
+    public func directBoot(entry: UInt32, stackSVC: UInt32, stackIRQ: UInt32, stackSYS: UInt32) {
+        setCPSR(ARMMode.supervisor.rawValue | PSR.i | PSR.f)
+        regs[13] = stackSVC
+        setCPSR(ARMMode.irq.rawValue | PSR.i | PSR.f)
+        regs[13] = stackIRQ
+        setCPSR(ARMMode.system.rawValue)
+        regs[13] = stackSYS
+        for i in 0..<13 { regs[i] = 0 }
+        regs[12] = entry
+        regs[14] = entry
+        regs[15] = entry
+        halted = false
+    }
+
+    // MARK: - Halting and interrupts
+
+    public func halt() { halted = true }
+
+    public func waitForInterrupt(mask: UInt32, discardOld: Bool) {
+        let flagsAddress = bus.irqCheckFlagsAddress
+        if discardOld {
+            bus.write32(flagsAddress, bus.read32(flagsAddress) & ~mask)
+        } else if bus.read32(flagsAddress) & mask != 0 {
+            bus.write32(flagsAddress, bus.read32(flagsAddress) & ~mask)
+            return
+        }
+        intrWaitMask = mask
+        halted = true
+    }
+
+    @usableFromInline func enterException(vector: UInt32, mode: ARMMode, returnAddress: UInt32) {
+        let old = cpsr
+        switchMode(mode.rawValue)
+        spsr = old
+        regs[14] = returnAddress
+        cpsr = (cpsr & ~PSR.t) | PSR.i
+        if mode == .fiq { cpsr |= PSR.f }
+        regs[15] = exceptionBase &+ vector
+        branched = true
+    }
+
+    /// Takes an IRQ before the instruction at r15.
+    @usableFromInline func serviceIRQ() {
+        enterException(vector: 0x18, mode: .irq, returnAddress: regs[15] &+ 4)
+        guard hleBIOS else { return }
+        // What the BIOS stub does: push r0-r3, r12, lr; r0 = 0x04000000;
+        // lr = stub return; jump to the handler the game installed.
+        var sp = regs[13] &- 24
+        regs[13] = sp
+        for i in [0, 1, 2, 3, 12, 14] {
+            bus.write32(sp, regs[i])
+            sp &+= 4
+        }
+        regs[0] = 0x0400_0000
+        regs[14] = hleIRQReturn
+        branchExchange(to: bus.read32(bus.irqHandlerPointer))
+    }
+
+    /// The BIOS stub's tail: pop r0-r3, r12, lr; SUBS pc, lr, #4.
+    @usableFromInline func returnFromHLEIRQ() {
+        var sp = regs[13]
+        for i in [0, 1, 2, 3, 12, 14] {
+            regs[i] = bus.read32(sp)
+            sp &+= 4
+        }
+        regs[13] = sp
+        let target = regs[14] &- 4
+        setCPSR(spsr)
+        branch(to: target)
+        if intrWaitMask != 0 {
+            let flagsAddress = bus.irqCheckFlagsAddress
+            let flags = bus.read32(flagsAddress)
+            if flags & intrWaitMask != 0 {
+                bus.write32(flagsAddress, flags & ~intrWaitMask)
+                intrWaitMask = 0
+            } else {
+                halted = true
+            }
+        }
+    }
+
+    // MARK: - Run loop
+
+    /// Runs until the master clock reaches `target`.
+    public func run(until target: UInt64) {
+        while cycles < target {
+            if halted {
+                if wakeLine || irqLine { halted = false } else { cycles = target; return }
+            }
+            if irqLine && cpsr & PSR.i == 0 {
+                branched = false
+                serviceIRQ()
+            }
+            step()
+            cycles &+= cyclesPerInstruction
+        }
+    }
+
+    public func step() {
+        branched = false
+        let address = regs[15]
+        if cpsr & PSR.t != 0 {
+            let op = bus.fetch16(address)
+            regs[15] = address &+ 4
+            executeThumb(op, address: address)
+            if !branched { regs[15] = address &+ 2 }
+        } else {
+            if hleBIOS && address == hleIRQReturn {
+                returnFromHLEIRQ()
+                return
+            }
+            let op = bus.fetch32(address)
+            regs[15] = address &+ 8
+            executeARM(op, address: address)
+            if !branched { regs[15] = address &+ 4 }
+        }
+        instructionsRetired &+= 1
+    }
+
+    // MARK: - Flags and shifter
+
+    @inline(__always) @usableFromInline func conditionPassed(_ cond: UInt32) -> Bool {
+        let n = cpsr & PSR.n != 0, z = cpsr & PSR.z != 0
+        let c = cpsr & PSR.c != 0, v = cpsr & PSR.v != 0
+        switch cond {
+        case 0x0: return z
+        case 0x1: return !z
+        case 0x2: return c
+        case 0x3: return !c
+        case 0x4: return n
+        case 0x5: return !n
+        case 0x6: return v
+        case 0x7: return !v
+        case 0x8: return c && !z
+        case 0x9: return !c || z
+        case 0xA: return n == v
+        case 0xB: return n != v
+        case 0xC: return !z && n == v
+        case 0xD: return z || n != v
+        case 0xE: return true
+        default: return false
+        }
+    }
+
+    @inline(__always) @usableFromInline var carry: UInt32 { (cpsr >> 29) & 1 }
+
+    @inline(__always) @usableFromInline func setNZ(_ result: UInt32) {
+        cpsr = (cpsr & ~(PSR.n | PSR.z)) | (result & PSR.n) | (result == 0 ? PSR.z : 0)
+    }
+
+    @inline(__always) @usableFromInline func setNZC(_ result: UInt32, _ c: Bool) {
+        cpsr = (cpsr & ~(PSR.n | PSR.z | PSR.c)) | (result & PSR.n) | (result == 0 ? PSR.z : 0) | (c ? PSR.c : 0)
+    }
+
+    /// a + b + carryIn, setting NZCV when `setFlags`.
+    @inline(__always) @usableFromInline
+    func addWithCarry(_ a: UInt32, _ b: UInt32, _ carryIn: UInt32, setFlags: Bool) -> UInt32 {
+        let wide = UInt64(a) &+ UInt64(b) &+ UInt64(carryIn)
+        let result = UInt32(truncatingIfNeeded: wide)
+        if setFlags {
+            let c = wide >> 32 != 0
+            let v = (~(a ^ b) & (a ^ result)) >> 31 != 0
+            cpsr = (cpsr & ~(PSR.n | PSR.z | PSR.c | PSR.v)) | (result & PSR.n) | (result == 0 ? PSR.z : 0)
+                | (c ? PSR.c : 0) | (v ? PSR.v : 0)
+        }
+        return result
+    }
+
+    /// Barrel shifter with an immediate amount (encodings where 0 has special meanings).
+    @inline(__always) @usableFromInline
+    func shiftImmediate(_ type: UInt32, _ value: UInt32, _ amount: UInt32) -> (UInt32, Bool) {
+        let c = cpsr & PSR.c != 0
+        switch type {
+        case 0:  // LSL
+            if amount == 0 { return (value, c) }
+            return (value << amount, (value >> (32 - amount)) & 1 != 0)
+        case 1:  // LSR, 0 means 32
+            if amount == 0 { return (0, value >> 31 != 0) }
+            return (value >> amount, (value >> (amount - 1)) & 1 != 0)
+        case 2:  // ASR, 0 means 32
+            if amount == 0 {
+                let s = value >> 31 != 0
+                return (s ? 0xFFFF_FFFF : 0, s)
+            }
+            return (UInt32(bitPattern: Int32(bitPattern: value) >> Int32(amount)), (value >> (amount - 1)) & 1 != 0)
+        default:  // ROR, 0 means RRX
+            if amount == 0 { return ((c ? 0x8000_0000 : 0) | value >> 1, value & 1 != 0) }
+            return (value.rotatedRight(amount), (value >> (amount - 1)) & 1 != 0)
+        }
+    }
+
+    /// Barrel shifter with the amount taken from a register (bottom byte).
+    @inline(__always) @usableFromInline
+    func shiftRegister(_ type: UInt32, _ value: UInt32, _ amount: UInt32) -> (UInt32, Bool) {
+        let c = cpsr & PSR.c != 0
+        if amount == 0 { return (value, c) }
+        switch type {
+        case 0:
+            if amount < 32 { return (value << amount, (value >> (32 - amount)) & 1 != 0) }
+            return (0, amount == 32 ? value & 1 != 0 : false)
+        case 1:
+            if amount < 32 { return (value >> amount, (value >> (amount - 1)) & 1 != 0) }
+            return (0, amount == 32 ? value >> 31 != 0 : false)
+        case 2:
+            if amount < 32 {
+                return (UInt32(bitPattern: Int32(bitPattern: value) >> Int32(amount)), (value >> (amount - 1)) & 1 != 0)
+            }
+            let s = value >> 31 != 0
+            return (s ? 0xFFFF_FFFF : 0, s)
+        default:
+            let r = amount & 31
+            if r == 0 { return (value, value >> 31 != 0) }
+            return (value.rotatedRight(r), (value >> (r - 1)) & 1 != 0)
+        }
+    }
+
+    // MARK: - Memory helpers
+
+    /// LDR semantics: aligned read rotated by the low address bits.
+    @inline(__always) @usableFromInline func loadWord(_ address: UInt32) -> UInt32 {
+        let v = bus.read32(address & ~3)
+        return v.rotatedRight((address & 3) * 8)
+    }
+
+    @inline(__always) @usableFromInline func loadHalf(_ address: UInt32) -> UInt32 {
+        let v = UInt32(bus.read16(address & ~1))
+        if !isV5 && address & 1 != 0 { return v.rotatedRight(8) }
+        return v
+    }
+
+    @inline(__always) @usableFromInline func loadSignedHalf(_ address: UInt32) -> UInt32 {
+        if !isV5 && address & 1 != 0 {
+            return UInt32(bitPattern: Int32(Int8(bitPattern: bus.read8(address))))
+        }
+        return UInt32(bitPattern: Int32(Int16(bitPattern: bus.read16(address & ~1))))
+    }
+
+    @inline(__always) @usableFromInline func loadSignedByte(_ address: UInt32) -> UInt32 {
+        UInt32(bitPattern: Int32(Int8(bitPattern: bus.read8(address))))
+    }
+
+    // MARK: - Saturating arithmetic (ARMv5TE)
+
+    @inline(__always) @usableFromInline func saturatingAdd(_ a: UInt32, _ b: UInt32) -> UInt32 {
+        let (r, o) = Int32(bitPattern: a).addingReportingOverflow(Int32(bitPattern: b))
+        if o { cpsr |= PSR.q; return r < 0 ? 0x7FFF_FFFF : 0x8000_0000 }
+        return UInt32(bitPattern: r)
+    }
+
+    @inline(__always) @usableFromInline func saturatingSub(_ a: UInt32, _ b: UInt32) -> UInt32 {
+        let (r, o) = Int32(bitPattern: a).subtractingReportingOverflow(Int32(bitPattern: b))
+        if o { cpsr |= PSR.q; return r < 0 ? 0x7FFF_FFFF : 0x8000_0000 }
+        return UInt32(bitPattern: r)
+    }
+
+    @inline(__always) @usableFromInline func halfword(_ v: UInt32, top: Bool) -> Int32 {
+        Int32(Int16(truncatingIfNeeded: top ? v >> 16 : v))
+    }
+}

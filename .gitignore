@@ -1,0 +1,14 @@
+.DS_Store
+.build/
+.swiftpm/
+*.xcodeproj/
+xcuserdata/
+DerivedData/
+# Never commit games, BIOS or firmware dumps
+*.nds
+*.srl
+*.3ds
+*.cia
+*.sav
+bios*.bin
+firmware*.bin
