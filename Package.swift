@@ -2,13 +2,12 @@
 // Clamshell: Nintendo DS (and later 3DS) emulation for iPhone, iPad and iPhone Duo.
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import Foundation
 import PackageDescription
 
 // The cores are hot loops: build them without runtime safety checks in release.
-let coreSettings: [SwiftSetting] = [
-    .unsafeFlags(["-Ounchecked", "-wmo", "-enforce-exclusivity=unchecked", "-Xfrontend", "-disable-llvm-merge-functions-pass",
-                   "-cross-module-optimization"], .when(configuration: .release)),
-]
+let bisectFlags = (ProcessInfo.processInfo.environment["CLAMSHELL_FLAGS"] ?? "").split(separator: " ").map(String.init)
+let coreSettings: [SwiftSetting] = bisectFlags.isEmpty ? [] : [.unsafeFlags(bisectFlags, .when(configuration: .release))]
 
 let package = Package(
     name: "Clamshell",
