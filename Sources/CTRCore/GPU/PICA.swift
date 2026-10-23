@@ -92,7 +92,13 @@ final class PICA {
         case 0x22F: draw(indexed: true)
         case 0x232:  // FIXEDATTRIB_INDEX
             attributeWords.removeAll(keepingCapacity: true)
-            if new & 0xF == 0xF { immediateAttributes.removeAll(keepingCapacity: true); resetAssembly() }
+            if new & 0xF == 0xF {
+                // Immediate-mode vertices follow: pick up the current render state.
+                drawCalls += 1
+                rasterizer.configure(regs)
+                immediateAttributes.removeAll(keepingCapacity: true)
+                resetAssembly()
+            }
         case 0x233...0x235:
             attributeWords.append(new)
             if attributeWords.count == 3 {
