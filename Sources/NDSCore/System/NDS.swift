@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import ARMCore
 import EmuKit
 
 /// Master clock: one tick per ARM9 cycle, 67.027964 MHz. The ARM7 and the

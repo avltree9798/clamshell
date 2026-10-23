@@ -3,6 +3,8 @@
 // BIOS calls reimplemented from their documented behaviour (GBATEK), so no
 // Nintendo BIOS image is needed or distributed.
 
+import ARMCore
+
 enum HLEBIOS {
     /// Runs SWI `number`. Returns false for calls not implemented yet, which then
     /// take the real exception path (and fail visibly in a debugger).

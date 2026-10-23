@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import ARMCore
 import EmuKit
 
 /// The ARM9's view of memory, including its tightly coupled memories and CP15.
