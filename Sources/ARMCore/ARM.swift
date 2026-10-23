@@ -62,12 +62,12 @@ public final class ARM<Bus: ARMBus>: ARMRegisterFile {
     @exclusivity(unchecked) @usableFromInline var intrWaitMask: UInt32 = 0
 
     /// Address reserved by LDREX, cleared by STREX, CLREX and context switches.
-    @usableFromInline var exclusiveAddress: UInt32? = nil
+    @exclusivity(unchecked) @usableFromInline var exclusiveAddress: UInt32? = nil
 
     /// VFP registers s0-s31 (d0-d15 are pairs of them, low word first), FPSCR and FPEXC.
     @usableFromInline let vfp: UnsafeMutablePointer<UInt32>
-    public var fpscr: UInt32 = 0
-    public var fpexc: UInt32 = 0
+    @exclusivity(unchecked) public var fpscr: UInt32 = 0
+    @exclusivity(unchecked) public var fpexc: UInt32 = 0
 
     /// Address the HLE IRQ stub returns to. Inside the BIOS region, never executed.
     @usableFromInline let hleIRQReturn: UInt32
@@ -208,7 +208,7 @@ public final class ARM<Bus: ARMBus>: ARMRegisterFile {
 
     /// When false, `run(until:)` returns as soon as the CPU halts instead of idling to
     /// the target, so a kernel can switch threads. The 3DS core clears it.
-    public var haltConsumesTime = true
+    @exclusivity(unchecked) public var haltConsumesTime = true
 
     // MARK: - Thread contexts (for an HLE kernel)
 
