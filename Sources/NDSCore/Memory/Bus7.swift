@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import ARMCore
 import EmuKit
 
 /// The ARM7's view of memory: its own 64 KB WRAM, part of shared WRAM, and the

@@ -35,31 +35,36 @@ public final class ARM<Bus: ARMBus>: ARMRegisterFile {
     //  16..<22  banked r13 per bank      22..<28  banked r14 per bank
     //  28..<34  SPSR per bank            34..<39  FIQ r8-r12   39..<44  user r8-r12
     @usableFromInline let regs: UnsafeMutablePointer<UInt32>
-    @usableFromInline var cpsr: UInt32 = ARMMode.supervisor.rawValue | PSR.i | PSR.f
+    @exclusivity(unchecked) @usableFromInline var cpsr: UInt32 = ARMMode.supervisor.rawValue | PSR.i | PSR.f
 
-    public var cycles: UInt64 = 0
-    public private(set) var halted = false
+    @exclusivity(unchecked) public var cycles: UInt64 = 0
+    @exclusivity(unchecked) public private(set) var halted = false
     /// IME && (IE & IF) != 0. Set by the interrupt controller.
-    public var irqLine = false
+    @exclusivity(unchecked) public var irqLine = false
     /// (IE & IF) != 0, which wakes a halted CPU even when IME is off.
-    public var wakeLine = false
+    @exclusivity(unchecked) public var wakeLine = false
     /// Base of the exception vectors: 0 on the ARM7, 0xFFFF0000 on the ARM9 by default.
-    public var exceptionBase: UInt32
+    @exclusivity(unchecked) public var exceptionBase: UInt32
     /// When true, SWIs and IRQ entry are handled in Swift and no BIOS image is needed.
-    public var hleBIOS = true
+    @exclusivity(unchecked) public var hleBIOS = true
     /// Instructions retired, for benchmarks.
-    public private(set) var instructionsRetired: UInt64 = 0
+    @exclusivity(unchecked) public private(set) var instructionsRetired: UInt64 = 0
 
     /// Cycles one instruction costs on the master clock. The ARM7 runs at half the ARM9 clock.
     @usableFromInline let cyclesPerInstruction: UInt64
 
     /// Set when the current instruction wrote r15, so `step` must not advance the PC.
-    @usableFromInline var branched = false
+    @exclusivity(unchecked) @usableFromInline var branched = false
 
-    @usableFromInline var intrWaitMask: UInt32 = 0
+    @exclusivity(unchecked) @usableFromInline var intrWaitMask: UInt32 = 0
 
     /// Address the HLE IRQ stub returns to. Inside the BIOS region, never executed.
     @usableFromInline let hleIRQReturn: UInt32
+
+    /// Instruction class for each value of bits 27-20 and 7-4 (see `ARMKind`).
+    @usableFromInline let armDecodeTable: UnsafeMutablePointer<UInt8>
+    /// Bit `cond` of entry `NZCV` says whether condition `cond` passes for those flags.
+    @usableFromInline let conditionTable: UnsafeMutablePointer<UInt16>
 
     public init(model: Model, bus: Bus) {
         self.model = model
@@ -70,9 +75,20 @@ public final class ARM<Bus: ARMBus>: ARMRegisterFile {
         hleIRQReturn = model == .arm946es ? 0xFFFF_0F00 : 0x0000_0F00
         regs = .allocate(capacity: 44)
         regs.initialize(repeating: 0, count: 44)
+        armDecodeTable = ARMKind.makeTable()
+        conditionTable = .allocate(capacity: 16)
+        for flags in 0..<16 {
+            var passes: UInt16 = 0
+            for cond in 0..<16 where Self.evaluate(UInt32(cond), flags: UInt32(flags)) { passes |= 1 << cond }
+            conditionTable[flags] = passes
+        }
     }
 
-    deinit { regs.deallocate() }
+    deinit {
+        regs.deallocate()
+        armDecodeTable.deallocate()
+        conditionTable.deallocate()
+    }
 
     // MARK: - Register file
 
@@ -247,9 +263,44 @@ public final class ARM<Bus: ARMBus>: ARMRegisterFile {
                 branched = false
                 serviceIRQ()
             }
-            step()
-            cycles &+= cyclesPerInstruction
+            if cpsr & PSR.t != 0 { runThumb(until: target) } else { runARM(until: target) }
         }
+    }
+
+    /// Executes ARM instructions until the target, a switch to Thumb, a halt, or a pending IRQ.
+    @inline(__always) func runARM(until target: UInt64) {
+        repeat {
+            let address = regs[15]
+            if hleBIOS && address == hleIRQReturn {
+                returnFromHLEIRQ()
+            } else {
+                branched = false
+                let op = bus.fetch32(address)
+                regs[15] = address &+ 8
+                executeARM(op, address: address)
+                if !branched { regs[15] = address &+ 4 }
+                instructionsRetired &+= 1
+            }
+            cycles &+= cyclesPerInstruction
+        } while cycles < target && !mustLeaveLoop(stateBit: 0)
+    }
+
+    /// Executes Thumb instructions until the target, a switch to ARM, a halt, or a pending IRQ.
+    @inline(__always) func runThumb(until target: UInt64) {
+        repeat {
+            branched = false
+            let address = regs[15]
+            let op = bus.fetch16(address)
+            regs[15] = address &+ 4
+            executeThumb(op, address: address)
+            if !branched { regs[15] = address &+ 2 }
+            instructionsRetired &+= 1
+            cycles &+= cyclesPerInstruction
+        } while cycles < target && !mustLeaveLoop(stateBit: PSR.t)
+    }
+
+    @inline(__always) func mustLeaveLoop(stateBit: UInt32) -> Bool {
+        cpsr & PSR.t != stateBit || halted || (irqLine && cpsr & PSR.i == 0)
     }
 
     public func step() {
@@ -276,8 +327,13 @@ public final class ARM<Bus: ARMBus>: ARMRegisterFile {
     // MARK: - Flags and shifter
 
     @inline(__always) @usableFromInline func conditionPassed(_ cond: UInt32) -> Bool {
-        let n = cpsr & PSR.n != 0, z = cpsr & PSR.z != 0
-        let c = cpsr & PSR.c != 0, v = cpsr & PSR.v != 0
+        (conditionTable[Int(cpsr >> 28)] >> UInt16(cond)) & 1 != 0
+    }
+
+    /// Condition `cond` against NZCV flags given as a 4-bit value; builds `conditionTable`.
+    static func evaluate(_ cond: UInt32, flags: UInt32) -> Bool {
+        let n = flags & 8 != 0, z = flags & 4 != 0
+        let c = flags & 2 != 0, v = flags & 1 != 0
         switch cond {
         case 0x0: return z
         case 0x1: return !z

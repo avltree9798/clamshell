@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import Testing
-@testable import NDSCore
+@testable import ARMCore
 
 /// 64 KB of flat RAM at address 0, enough to run instruction sequences.
 final class FlatBus: ARMBus {

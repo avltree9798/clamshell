@@ -12,17 +12,18 @@ final class ControllerInput {
 
     init(input: InputState) {
         self.input = input
-        GCController.controllers().forEach(attach)
+        GCController.controllers().forEach { Self.attach($0, to: input) }
         observers.append(NotificationCenter.default.addObserver(
-            forName: .GCControllerDidConnect, object: nil, queue: .main) { [weak self] note in
+            forName: .GCControllerDidConnect, object: nil, queue: .main) { note in
+            // Handled where the notification arrives, so the controller never crosses actors.
             guard let controller = note.object as? GCController else { return }
-            MainActor.assumeIsolated { self?.attach(controller) }
+            Self.attach(controller, to: input)
         })
     }
 
-    private func attach(_ controller: GCController) {
+    /// Only touches the controller and the thread-safe `InputState`, so it needs no actor.
+    private nonisolated static func attach(_ controller: GCController, to input: InputState) {
         guard let pad = controller.extendedGamepad else { return }
-        let input = self.input
         pad.valueChangedHandler = { pad, _ in
             var b: Buttons = []
             if pad.buttonB.isPressed { b.insert(.a) }       // right face button
