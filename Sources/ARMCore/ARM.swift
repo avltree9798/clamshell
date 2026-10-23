@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// ARM7TDMI (ARMv4T) and ARM946E-S (ARMv5TE) interpreter.
-// Written from the ARM Architecture Reference Manual and GBATEK.
+// ARM7TDMI (ARMv4T), ARM946E-S (ARMv5TE) and ARM11 MPCore (ARMv6K + VFPv2)
+// interpreter. Written from the ARM Architecture Reference Manual and GBATEK.
 
 /// CPSR bits.
 @usableFromInline enum PSR {
@@ -22,11 +22,14 @@ public enum ARMMode: UInt32 {
 }
 
 public final class ARM<Bus: ARMBus>: ARMRegisterFile {
-    public enum Model: Sendable { case arm7tdmi, arm946es }
+    /// DS ARM7, DS ARM9, 3DS ARM11.
+    public enum Model: Sendable { case arm7tdmi, arm946es, arm11mpcore }
 
     public let model: Model
     /// ARMv5TE instructions (BLX, CLZ, QADD, SMLAxy, LDRD) are only on the ARM9.
     @usableFromInline let isV5: Bool
+    /// ARMv6K media, exclusive and VFP instructions, unaligned access: ARM11 only.
+    @usableFromInline let isV6: Bool
     // Strong, so calls through it need no retain: the bus never points back at the CPU strongly.
     @usableFromInline let bus: Bus
 
@@ -58,6 +61,14 @@ public final class ARM<Bus: ARMBus>: ARMRegisterFile {
 
     @exclusivity(unchecked) @usableFromInline var intrWaitMask: UInt32 = 0
 
+    /// Address reserved by LDREX, cleared by STREX, CLREX and context switches.
+    @usableFromInline var exclusiveAddress: UInt32? = nil
+
+    /// VFP registers s0-s31 (d0-d15 are pairs of them, low word first), FPSCR and FPEXC.
+    @usableFromInline let vfp: UnsafeMutablePointer<UInt32>
+    public var fpscr: UInt32 = 0
+    public var fpexc: UInt32 = 0
+
     /// Address the HLE IRQ stub returns to. Inside the BIOS region, never executed.
     @usableFromInline let hleIRQReturn: UInt32
 
@@ -69,13 +80,16 @@ public final class ARM<Bus: ARMBus>: ARMRegisterFile {
     public init(model: Model, bus: Bus) {
         self.model = model
         self.bus = bus
-        isV5 = model == .arm946es
-        exceptionBase = model == .arm946es ? 0xFFFF_0000 : 0
-        cyclesPerInstruction = model == .arm946es ? 1 : 2
-        hleIRQReturn = model == .arm946es ? 0xFFFF_0F00 : 0x0000_0F00
+        isV5 = model != .arm7tdmi
+        isV6 = model == .arm11mpcore
+        exceptionBase = model == .arm7tdmi ? 0 : 0xFFFF_0000
+        cyclesPerInstruction = model == .arm7tdmi ? 2 : 1
+        hleIRQReturn = model == .arm7tdmi ? 0x0000_0F00 : 0xFFFF_0F00
         regs = .allocate(capacity: 44)
         regs.initialize(repeating: 0, count: 44)
-        armDecodeTable = ARMKind.makeTable()
+        armDecodeTable = ARMKind.makeTable(v6: model == .arm11mpcore)
+        vfp = .allocate(capacity: 32)
+        vfp.initialize(repeating: 0, count: 32)
         conditionTable = .allocate(capacity: 16)
         for flags in 0..<16 {
             var passes: UInt16 = 0
@@ -88,6 +102,7 @@ public final class ARM<Bus: ARMBus>: ARMRegisterFile {
         regs.deallocate()
         armDecodeTable.deallocate()
         conditionTable.deallocate()
+        vfp.deallocate()
     }
 
     // MARK: - Register file
@@ -428,23 +443,51 @@ public final class ARM<Bus: ARMBus>: ARMRegisterFile {
 
     // MARK: - Memory helpers
 
-    /// LDR semantics: aligned read rotated by the low address bits.
+    /// LDR semantics: before ARMv6, an aligned read rotated by the low address bits.
+    /// The 3DS runs the ARM11 with unaligned access enabled, so it reads the bytes as addressed.
     @inline(__always) @usableFromInline func loadWord(_ address: UInt32) -> UInt32 {
+        if address & 3 != 0 && isV6 { return unalignedRead32(address) }
         let v = bus.read32(address & ~3)
         return v.rotatedRight((address & 3) * 8)
     }
 
+    @inline(__always) @usableFromInline func storeWord(_ address: UInt32, _ value: UInt32) {
+        if address & 3 != 0 && isV6 { unalignedWrite32(address, value); return }
+        bus.write32(address & ~3, value)
+    }
+
     @inline(__always) @usableFromInline func loadHalf(_ address: UInt32) -> UInt32 {
+        if address & 1 != 0 && isV6 { return UInt32(bus.read8(address)) | UInt32(bus.read8(address &+ 1)) << 8 }
         let v = UInt32(bus.read16(address & ~1))
         if !isV5 && address & 1 != 0 { return v.rotatedRight(8) }
         return v
     }
 
+    @inline(__always) @usableFromInline func storeHalf(_ address: UInt32, _ value: UInt32) {
+        if address & 1 != 0 && isV6 {
+            bus.write8(address, UInt8(truncatingIfNeeded: value))
+            bus.write8(address &+ 1, UInt8(truncatingIfNeeded: value >> 8))
+            return
+        }
+        bus.write16(address & ~1, UInt16(truncatingIfNeeded: value))
+    }
+
     @inline(__always) @usableFromInline func loadSignedHalf(_ address: UInt32) -> UInt32 {
+        if address & 1 != 0 && isV6 { return UInt32(bitPattern: Int32(Int16(bitPattern: UInt16(loadHalf(address))))) }
         if !isV5 && address & 1 != 0 {
             return UInt32(bitPattern: Int32(Int8(bitPattern: bus.read8(address))))
         }
         return UInt32(bitPattern: Int32(Int16(bitPattern: bus.read16(address & ~1))))
+    }
+
+    @usableFromInline func unalignedRead32(_ address: UInt32) -> UInt32 {
+        var v: UInt32 = 0
+        for i in 0..<4 as Range<UInt32> { v |= UInt32(bus.read8(address &+ i)) << (i * 8) }
+        return v
+    }
+
+    @usableFromInline func unalignedWrite32(_ address: UInt32, _ value: UInt32) {
+        for i in 0..<4 as Range<UInt32> { bus.write8(address &+ i, UInt8(truncatingIfNeeded: value >> (i * 8))) }
     }
 
     @inline(__always) @usableFromInline func loadSignedByte(_ address: UInt32) -> UInt32 {

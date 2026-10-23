@@ -41,8 +41,8 @@ extension ARM {
             let address = regs[Int((op >> 3) & 7)] &+ regs[Int((op >> 6) & 7)]
             let rd = Int(op & 7)
             switch (op >> 9) & 7 {
-            case 0: bus.write32(address & ~3, regs[rd])
-            case 1: bus.write16(address & ~1, UInt16(truncatingIfNeeded: regs[rd]))
+            case 0: storeWord(address, regs[rd])
+            case 1: storeHalf(address, regs[rd])
             case 2: bus.write8(address, UInt8(truncatingIfNeeded: regs[rd]))
             case 3: regs[rd] = loadSignedByte(address)
             case 4: regs[rd] = loadWord(address)
@@ -52,7 +52,7 @@ extension ARM {
             }
 
         case 0x0C:  // STR rd, [rb, #imm5*4]
-            bus.write32((regs[Int((op >> 3) & 7)] &+ ((op >> 6) & 0x1F) << 2) & ~3, regs[Int(op & 7)])
+            storeWord(regs[Int((op >> 3) & 7)] &+ ((op >> 6) & 0x1F) << 2, regs[Int(op & 7)])
         case 0x0D:  // LDR
             regs[Int(op & 7)] = loadWord(regs[Int((op >> 3) & 7)] &+ ((op >> 6) & 0x1F) << 2)
         case 0x0E:  // STRB
@@ -61,12 +61,12 @@ extension ARM {
             regs[Int(op & 7)] = UInt32(bus.read8(regs[Int((op >> 3) & 7)] &+ ((op >> 6) & 0x1F)))
         case 0x10:  // STRH
             let address = regs[Int((op >> 3) & 7)] &+ ((op >> 6) & 0x1F) << 1
-            bus.write16(address & ~1, UInt16(truncatingIfNeeded: regs[Int(op & 7)]))
+            storeHalf(address, regs[Int(op & 7)])
         case 0x11:  // LDRH
             regs[Int(op & 7)] = loadHalf(regs[Int((op >> 3) & 7)] &+ ((op >> 6) & 0x1F) << 1)
 
         case 0x12:  // STR rd, [sp, #imm8*4]
-            bus.write32((regs[13] &+ (op & 0xFF) << 2) & ~3, regs[Int((op >> 8) & 7)])
+            storeWord(regs[13] &+ (op & 0xFF) << 2, regs[Int((op >> 8) & 7)])
         case 0x13:  // LDR rd, [sp, #imm8*4]
             regs[Int((op >> 8) & 7)] = loadWord(regs[13] &+ (op & 0xFF) << 2)
 
@@ -164,7 +164,7 @@ extension ARM {
         }
     }
 
-    /// ADD SP, PUSH, POP, BKPT.
+    /// ADD SP, PUSH, POP, BKPT, and on ARMv6 extend, reverse and CPS.
     func thumbMisc(_ op: UInt32, address: UInt32) {
         switch (op >> 8) & 0xF {
         case 0x0:  // ADD SP, #±imm7*4
@@ -196,6 +196,9 @@ extension ARM {
             } else {
                 regs[13] = sp
             }
+        case 0x2 where isV6: thumbExtend(op)
+        case 0x6 where isV6: thumbChangeState(op, address: address)
+        case 0xA where isV6: thumbReverse(op, address: address)
         case 0xE:  // BKPT (ARMv5)
             if isV5 { prefetchAbort(address) } else { undefinedInstruction(address) }
         default:
