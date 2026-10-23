@@ -116,7 +116,10 @@ enum PICATexture {
         let flip = (word >> 32) & 1 != 0, differential = (word >> 33) & 1 != 0
         let second = flip ? v >= 2 : u >= 2
         var r: Int32, g: Int32, b: Int32
-        func bits(_ shift: UInt64, _ count: UInt64) -> UInt32 { UInt32((word >> shift) & ((1 << count) - 1)) }
+        func bits(_ shift: UInt64, _ count: UInt64) -> UInt32 {
+            let mask: UInt64 = (1 << count) - 1
+            return UInt32((word >> shift) & mask)
+        }
         if differential {
             func channel(_ baseShift: UInt64, _ deltaShift: UInt64) -> Int32 {
                 var c = Int32(bits(baseShift, 5))

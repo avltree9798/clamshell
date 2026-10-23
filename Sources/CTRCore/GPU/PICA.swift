@@ -192,7 +192,8 @@ final class PICA {
             guard let start = memory.host(physical: base &+ offset &+ UInt32(index * stride)) else { continue }
             var o = 0
             for c in 0..<count {
-                let attribute = Int(c < 8 ? (components >> UInt32(c * 4)) & 0xF : (config >> UInt32((c - 8) * 4)) & 0xF)
+                let field: UInt32 = c < 8 ? components >> UInt32(c * 4) : config >> UInt32((c - 8) * 4)
+                let attribute = Int(field & 0xF)
                 if attribute >= 12 {
                     // Padding of 4, 8, 12 or 16 bytes.
                     o = (o + 3) & ~3

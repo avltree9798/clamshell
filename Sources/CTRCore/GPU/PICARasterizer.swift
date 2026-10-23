@@ -432,9 +432,10 @@ final class PICARasterizer {
         let x0 = Int(su.rounded(.down)), y0 = Int(sv.rounded(.down))
         let fx = Int32((su - Float(x0)) * 256), fy = Int32((sv - Float(y0)) * 256)
         let c00 = texel(x0, y0), c10 = texel(x0 + 1, y0), c01 = texel(x0, y0 + 1), c11 = texel(x0 + 1, y0 + 1)
-        let top = (c00 &* (256 - fx) &+ c10 &* fx) / 256
-        let bottom = (c01 &* (256 - fx) &+ c11 &* fx) / 256
-        return (top &* (256 - fy) &+ bottom &* fy) / 256
+        let one: Int32 = 256
+        let top: PICAColor = (c00 &* (one - fx) &+ c10 &* fx) / one
+        let bottom: PICAColor = (c01 &* (one - fx) &+ c11 &* fx) / one
+        return (top &* (one - fy) &+ bottom &* fy) / one
     }
 
     /// Applies a wrap mode; nil means the border colour.
@@ -492,10 +493,14 @@ final class PICARasterizer {
         case 1: return a &* b / 255
         case 2: return clamp(a &+ b)
         case 3: return clamp(a &+ b &- 128)
-        case 4: return (a &* c &+ b &* (255 &- c)) / 255
+        case 4:
+            let full = PICAColor(repeating: 255)
+            let mixed: PICAColor = a &* c &+ b &* (full &- c)
+            return mixed / full
         case 5: return clamp(a &- b)
         case 6, 7:
-            let d = ((a.x - 128) * (b.x - 128) + (a.y - 128) * (b.y - 128) + (a.z - 128) * (b.z - 128)) / 64
+            let da: PICAColor = a &- 128, db: PICAColor = b &- 128
+            let d: Int32 = (da.x * db.x + da.y * db.y + da.z * db.z) / 64
             return PICAColor(repeating: min(max(d, 0), 255))
         case 8: return clamp(a &* b / 255 &+ c)
         case 9: return clamp(a &+ b) &* c / 255
@@ -600,14 +605,22 @@ final class PICARasterizer {
     static func encode(_ format: PICATextureFormat, _ c: PICAColor, _ p: UnsafeMutableRawPointer) {
         let r = UInt32(c.x), g = UInt32(c.y), b = UInt32(c.z), a = UInt32(c.w)
         switch format {
-        case .rgba8: p.storeBytes(of: r << 24 | g << 16 | b << 8 | a, as: UInt32.self)
+        case .rgba8:
+            let v: UInt32 = r << 24 | g << 16 | b << 8 | a
+            p.storeBytes(of: v, as: UInt32.self)
         case .rgb8:
             p.storeBytes(of: UInt8(b), as: UInt8.self)
             p.storeBytes(of: UInt8(g), toByteOffset: 1, as: UInt8.self)
             p.storeBytes(of: UInt8(r), toByteOffset: 2, as: UInt8.self)
-        case .rgb5a1: p.storeBytes(of: UInt16((r >> 3) << 11 | (g >> 3) << 6 | (b >> 3) << 1 | a >> 7), as: UInt16.self)
-        case .rgb565: p.storeBytes(of: UInt16((r >> 3) << 11 | (g >> 2) << 5 | b >> 3), as: UInt16.self)
-        default: p.storeBytes(of: UInt16((r >> 4) << 12 | (g >> 4) << 8 | (b >> 4) << 4 | a >> 4), as: UInt16.self)
+        case .rgb5a1:
+            let v: UInt32 = (r >> 3) << 11 | (g >> 3) << 6 | (b >> 3) << 1 | a >> 7
+            p.storeBytes(of: UInt16(truncatingIfNeeded: v), as: UInt16.self)
+        case .rgb565:
+            let v: UInt32 = (r >> 3) << 11 | (g >> 2) << 5 | b >> 3
+            p.storeBytes(of: UInt16(truncatingIfNeeded: v), as: UInt16.self)
+        default:
+            let v: UInt32 = (r >> 4) << 12 | (g >> 4) << 8 | (b >> 4) << 4 | a >> 4
+            p.storeBytes(of: UInt16(truncatingIfNeeded: v), as: UInt16.self)
         }
     }
 }
