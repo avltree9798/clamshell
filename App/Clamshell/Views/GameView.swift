@@ -61,8 +61,7 @@ struct GameView: View {
                     ScreenFrame(rect: layout.topScreen)
                     ScreenFrame(rect: layout.bottomScreen)
                     MetalScreen(presenter: presenter, screenIndex: 0)
-                        .frame(width: layout.topScreen.width, height: layout.topScreen.height)
-                        .offset(x: layout.topScreen.minX, y: layout.topScreen.minY)
+                        .place(layout.topScreen)
                     MetalScreen(presenter: presenter, screenIndex: 1) { point in
                         if let point {
                             let touch = screenSize(1)
@@ -71,19 +70,31 @@ struct GameView: View {
                             runtime.session.input.clearTouch()
                         }
                     }
-                    .frame(width: layout.bottomScreen.width, height: layout.bottomScreen.height)
-                    .offset(x: layout.bottomScreen.minX, y: layout.bottomScreen.minY)
+                    .place(layout.bottomScreen)
 
                     if !controllerConnected {
                         ControlsOverlay(layout: layout, input: runtime.session.input)
                     }
+                    // The session reports a failed load from its own thread; check once a second.
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        if let message = runtime.session.errorMessage {
+                            Text("Couldn't start this game: \(message)")
+                                .font(.callout)
+                                .foregroundStyle(.white)
+                                .padding(12)
+                                .background(.red.opacity(0.7), in: RoundedRectangle(cornerRadius: 10))
+                        }
+                    }
+                    .place(layout.topScreen.insetBy(dx: 12, dy: 12))
+                    .allowsHitTesting(false)
                 }
-                Button("Close", systemImage: "xmark.circle.fill") { dismiss() }
+                Button("Close", systemImage: "xmark") { dismiss() }
                     .labelStyle(.iconOnly)
-                    .font(.title2)
-                    .foregroundStyle(.white.opacity(0.6))
-                    .padding()
-                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.75))
+                    .frame(width: LayoutResolver.menuSize, height: LayoutResolver.menuSize)
+                    .background(Circle().fill(.white.opacity(0.14)))
+                    .place(layout.menuButton)
             }
         }
         .readPosture(hinge: $hinge, fold: $fold)
@@ -118,8 +129,7 @@ private struct ScreenFrame: View {
     var body: some View {
         RoundedRectangle(cornerRadius: 3)
             .strokeBorder(.white.opacity(0.18), lineWidth: 1)
-            .frame(width: rect.width + 6, height: rect.height + 6)
-            .offset(x: rect.minX - 3, y: rect.minY - 3)
+            .place(rect.insetBy(dx: -3, dy: -3))
             .allowsHitTesting(false)
     }
 }
