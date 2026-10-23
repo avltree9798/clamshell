@@ -119,14 +119,27 @@ enum LayoutResolver {
     /// Phone held sideways: big top screen in the middle, touch screen small at the side.
     static func landscape(_ input: LayoutInput) -> LayoutResult {
         let size = input.size
-        let side = size.width * 0.2
-        let top = fit(input.topScreenSize, in: CGRect(x: side, y: 0, width: size.width - side * 2, height: size.height))
-        let bottom = fit(input.bottomScreenSize, in: CGRect(x: size.width - side, y: 0, width: side, height: size.height / 2))
-        var result = LayoutResult(kind: .landscape, topScreen: top, bottomScreen: bottom)
+        let side = min(size.width * 0.18, 220)
+        let middle = CGRect(x: side, y: 0, width: size.width - side * 2, height: size.height)
+        var result: LayoutResult
+        if middle.width / 2 >= input.bottomScreenSize.width * 1.5 {
+            // Wide enough (iPad, Mac window): both screens side by side at a useful size.
+            let half = middle.width / 2
+            let top = fit(input.topScreenSize, in: CGRect(x: middle.minX, y: 0, width: half, height: size.height).insetBy(dx: 6, dy: 12))
+            let bottom = fit(input.bottomScreenSize, in: CGRect(x: middle.midX, y: 0, width: half, height: size.height).insetBy(dx: 6, dy: 12))
+            result = LayoutResult(kind: .landscape, topScreen: top, bottomScreen: bottom)
+            result.rightControls = CGRect(x: size.width - side, y: size.height * 0.4, width: side, height: size.height * 0.6)
+            result.shoulderRight = CGRect(x: size.width - side + 8, y: 8, width: side - 16, height: 36)
+        } else {
+            // Phone held sideways: big top screen in the middle, touch screen small at the right.
+            let top = fit(input.topScreenSize, in: middle)
+            let bottom = fit(input.bottomScreenSize, in: CGRect(x: size.width - side, y: 0, width: side, height: size.height / 2))
+            result = LayoutResult(kind: .landscape, topScreen: top, bottomScreen: bottom)
+            result.rightControls = CGRect(x: size.width - side, y: size.height * 0.5, width: side, height: size.height * 0.5)
+            result.shoulderRight = CGRect(x: 8, y: 52, width: side - 16, height: 36)
+        }
         result.leftControls = CGRect(x: 0, y: size.height * 0.4, width: side, height: size.height * 0.6)
-        result.rightControls = CGRect(x: size.width - side, y: size.height * 0.5, width: side, height: size.height * 0.5)
-        result.shoulderLeft = CGRect(x: 0, y: 0, width: side, height: 36)
-        result.shoulderRight = CGRect(x: 0, y: 44, width: side, height: 36)
+        result.shoulderLeft = CGRect(x: 8, y: 8, width: side - 16, height: 36)
         return result
     }
 }

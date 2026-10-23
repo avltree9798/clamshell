@@ -108,10 +108,14 @@ public final class NDS: EmulatorCore {
     var vcount: UInt32 = 0
     var dispstat9: UInt32 = 0
     var dispstat7: UInt32 = 0
-    var dispcntA: UInt32 = 0
-    var dispcntB: UInt32 = 0
     var powcnt1: UInt32 = 0
-    var vramcnt = [UInt8](repeating: 0, count: 10)
+    /// VRAMCNT_A...I.
+    var vramcnt = [UInt8](repeating: 0, count: 9) {
+        didSet { vramMap.rebuild(vramcnt) }
+    }
+    let vramMap = VRAMMap()
+    var engineA: Engine2D!
+    var engineB: Engine2D!
     var wramcnt: UInt8 = 3
     var lidClosed = false
     var frameStart: UInt64 = 0
@@ -131,6 +135,8 @@ public final class NDS: EmulatorCore {
         dma9 = DMAUnit(cpuIndex: 0, irq: irq9)
         dma7 = DMAUnit(cpuIndex: 1, irq: irq7)
         bus9 = Bus9(system: self)
+        engineA = Engine2D(isA: true, system: self)
+        engineB = Engine2D(isA: false, system: self)
         bus7 = Bus7(system: self)
         arm9 = ARM(model: .arm946es, bus: bus9)
         arm7 = ARM(model: .arm7tdmi, bus: bus7)
@@ -173,6 +179,10 @@ public final class NDS: EmulatorCore {
         arm7.cycles = 0
         bus9.resetCP15()
         wramcnt = 3
+        powcnt1 = 0
+        vramcnt = [UInt8](repeating: 0, count: 9)
+        engineA.reset()
+        engineB.reset()
     }
 
     public func setLidClosed(_ closed: Bool) { lidClosed = closed }
@@ -202,7 +212,11 @@ public final class NDS: EmulatorCore {
             dispstat7 |= 2
             if dispstat9 & (1 << 4) != 0 { irq9.raise(IRQ.hblank) }
             if dispstat7 & (1 << 4) != 0 { irq7.raise(IRQ.hblank) }
-            if vcount < NDSClock.visibleLines { dma9.trigger(.hblank) }
+            if vcount < NDSClock.visibleLines {
+                engineA.renderLine(Int(vcount))
+                engineB.renderLine(Int(vcount))
+                dma9.trigger(.hblank)
+            }
         case Event.lineEnd:
             endLine(at: event.time)
         default:
@@ -253,29 +267,36 @@ public final class NDS: EmulatorCore {
         arm7.wakeLine = irq7.wake
     }
 
-    // MARK: - Video output (framebuffer modes until the 2D engines land)
+    // MARK: - Video output
 
+    /// Engines render line by line at HBlank; at VBlank both pictures go to the screens POWCNT1 picks.
     private func presentFrame() {
         let topIsA = powcnt1 & (1 << 15) != 0
-        let a = frames.backBuffer(screen: topIsA ? 0 : 1)
-        let b = frames.backBuffer(screen: topIsA ? 1 : 0)
-        renderEngine(dispcnt: dispcntA, paletteBase: 0, into: a, isEngineA: true)
-        renderEngine(dispcnt: dispcntB, paletteBase: 0x400, into: b, isEngineA: false)
+        frames.backBuffer(screen: topIsA ? 0 : 1).update(from: engineA.frame, count: 256 * 192)
+        frames.backBuffer(screen: topIsA ? 1 : 0).update(from: engineB.frame, count: 256 * 192)
         frames.publish()
     }
 
-    private func renderEngine(dispcnt: UInt32, paletteBase: UInt32, into out: UnsafeMutablePointer<UInt32>, isEngineA: Bool) {
-        let mode = (dispcnt >> 16) & 3
-        if isEngineA && mode == 2 {
-            // VRAM display: a whole 128 KB bank (A-D) shown as 256 × 192 RGB555.
-            let bankBase = ((dispcnt >> 18) & 3) * 0x20000
-            for i in 0..<(256 * 192) {
-                out[i] = Self.bgra(from: vram.read16(bankBase + UInt32(i) * 2))
-            }
-            return
+    /// Offset into `vram` for an ARM9 address in 0x06000000-0x06FFFFFF, or nil if nothing is mapped there.
+    @inline(__always) func vramOffset9(_ a: UInt32) -> Int? {
+        let table: VRAMMap.Table
+        switch (a >> 21) & 7 {
+        case 0: table = vramMap.bgA
+        case 1: table = vramMap.bgB
+        case 2: table = vramMap.objA
+        case 3: table = vramMap.objB
+        default:
+            let o = a & 0xF_FFFF
+            return o < VRAMMap.totalSize ? Int(o) : nil
         }
-        let color: UInt32 = mode == 0 ? 0xFFFF_FFFF : Self.bgra(from: palette.read16(paletteBase))
-        out.update(repeating: color, count: 256 * 192)
+        let page = table[Int(a >> 14) & (table.count - 1)]
+        return page < 0 ? nil : Int(page) + Int(a & 0x3FFF)
+    }
+
+    /// Offset into `vram` for an ARM7 address in 0x06000000-0x06FFFFFF (banks C and D only).
+    @inline(__always) func vramOffset7(_ a: UInt32) -> Int? {
+        let page = vramMap.arm7[Int(a >> 14) & 15]
+        return page < 0 ? nil : Int(page) + Int(a & 0x3FFF)
     }
 
     @inline(__always) static func bgra(from rgb555: UInt16) -> UInt32 {
