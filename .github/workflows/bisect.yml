@@ -20,7 +20,10 @@ jobs:
       CLAMSHELL_FLAGS: ${{ matrix.flags }}
     steps:
       - uses: actions/checkout@v4
-      - run: swift build -c release --build-tests 2>&1 | grep -E "error|warning: unsafe|Compiling|Build" | head -60; exit ${PIPESTATUS[0]}
+      - run: |
+          swift build -c release --build-tests > build.log 2>&1; status=$?
+          grep -E "error|Compiling|Build" build.log | head -60
+          exit $status
         shell: bash {0}
       - run: swift test -c release --skip-build --verbose 2>&1 | tail -150
         shell: bash {0}
