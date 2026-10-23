@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: |
-          swift build -c release --build-tests > build.log 2>&1; status=$?
+          swift build -c release --build-tests -Xswiftc -enable-testing > build.log 2>&1; status=$?
           grep -E "error|Compiling|Build" build.log | head -60
           exit $status
         shell: bash {0}
