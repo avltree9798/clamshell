@@ -110,7 +110,8 @@ final class DMAUnit {
             case 1: return .vblank
             case 2: return .hblank
             case 5: return .cartridge
-            default: return nil  // display, main-memory display, GBA slot, geometry FIFO: later milestones
+            case 7: return .immediate  // geometry FIFO: commands run at once, so the FIFO always has room
+            default: return nil  // display, main-memory display, GBA slot: later milestones
             }
         }
         switch (control >> 28) & 3 {

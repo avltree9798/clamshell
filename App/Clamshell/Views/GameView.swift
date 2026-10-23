@@ -58,6 +58,8 @@ struct GameView: View {
             ZStack(alignment: .topLeading) {
                 Color.black.ignoresSafeArea()
                 if let runtime, let presenter = runtime.presenter {
+                    ScreenFrame(rect: layout.topScreen)
+                    ScreenFrame(rect: layout.bottomScreen)
                     MetalScreen(presenter: presenter, screenIndex: 0)
                         .frame(width: layout.topScreen.width, height: layout.topScreen.height)
                         .offset(x: layout.topScreen.minX, y: layout.topScreen.minY)
@@ -106,5 +108,18 @@ struct GameView: View {
         .onReceive(NotificationCenter.default.publisher(for: .GCControllerDidDisconnect)) { _ in
             controllerConnected = !GCController.controllers().isEmpty
         }
+    }
+}
+
+/// A faint outline just outside a screen, so a dark game screen does not vanish into the background.
+private struct ScreenFrame: View {
+    let rect: CGRect
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 3)
+            .strokeBorder(.white.opacity(0.18), lineWidth: 1)
+            .frame(width: rect.width + 6, height: rect.height + 6)
+            .offset(x: rect.minX - 3, y: rect.minY - 3)
+            .allowsHitTesting(false)
     }
 }

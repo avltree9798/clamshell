@@ -3,7 +3,7 @@
 import EmuKit
 import GameController
 
-/// Maps any connected game controller to DS buttons.
+/// Maps any connected game controller, and the keyboard, to DS buttons.
 /// Uses physical positions: the right face button is A, the bottom is B, as on a DS.
 @MainActor
 final class ControllerInput {
@@ -13,6 +13,12 @@ final class ControllerInput {
     init(input: InputState) {
         self.input = input
         GCController.controllers().forEach { Self.attach($0, to: input) }
+        if let keyboard = GCKeyboard.coalesced { Self.attach(keyboard, to: input) }
+        observers.append(NotificationCenter.default.addObserver(
+            forName: .GCKeyboardDidConnect, object: nil, queue: .main) { note in
+            guard let keyboard = note.object as? GCKeyboard else { return }
+            Self.attach(keyboard, to: input)
+        })
         observers.append(NotificationCenter.default.addObserver(
             forName: .GCControllerDidConnect, object: nil, queue: .main) { note in
             // Handled where the notification arrives, so the controller never crosses actors.
@@ -40,6 +46,32 @@ final class ControllerInput {
             if pad.dpad.left.isPressed || stick.xAxis.value < -0.5 { b.insert(.left) }
             if pad.dpad.right.isPressed || stick.xAxis.value > 0.5 { b.insert(.right) }
             input.set(b)
+        }
+    }
+
+    /// Arrow keys for the D-pad; X A, Z B, S X, A Y; Q and W the shoulders; Return Start; right Shift Select.
+    private nonisolated static func button(for key: GCKeyCode) -> Buttons? {
+        switch key {
+        case .upArrow: .up
+        case .downArrow: .down
+        case .leftArrow: .left
+        case .rightArrow: .right
+        case .keyX: .a
+        case .keyZ: .b
+        case .keyS: .x
+        case .keyA: .y
+        case .keyQ: .l
+        case .keyW: .r
+        case .returnOrEnter: .start
+        case .rightShift, .deleteOrBackspace: .select
+        default: nil
+        }
+    }
+
+    private nonisolated static func attach(_ keyboard: GCKeyboard, to input: InputState) {
+        keyboard.keyboardInput?.keyChangedHandler = { _, _, key, pressed in
+            guard let button = button(for: key) else { return }
+            if pressed { input.press(button) } else { input.release(button) }
         }
     }
 }

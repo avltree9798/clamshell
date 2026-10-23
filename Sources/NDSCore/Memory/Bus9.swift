@@ -105,7 +105,7 @@ final class Bus9: ARMBus {
         case 0x03: return wramOffset(a).map { s.sharedWRAM.read32($0) } ?? 0
         case 0x04: return ioRead(a & ~3)
         case 0x05: return s.palette.read32(a)
-        case 0x06: return isLCDC(a) ? s.vram.read32(a &- 0x0680_0000) : 0
+        case 0x06: return s.vramOffset9(a).map { s.vram.read32(UInt32($0)) } ?? 0
         case 0x07: return s.oam.read32(a)
         case 0x08, 0x09, 0x0A: return 0xFFFF_FFFF  // empty GBA slot
         default: return 0
@@ -120,7 +120,7 @@ final class Bus9: ARMBus {
         case 0x03: return wramOffset(a).map { s.sharedWRAM.read16($0) } ?? 0
         case 0x04: return UInt16(truncatingIfNeeded: ioRead(a & ~3) >> ((a & 2) * 8))
         case 0x05: return s.palette.read16(a)
-        case 0x06: return isLCDC(a) ? s.vram.read16(a &- 0x0680_0000) : 0
+        case 0x06: return s.vramOffset9(a).map { s.vram.read16(UInt32($0)) } ?? 0
         case 0x07: return s.oam.read16(a)
         case 0x08, 0x09, 0x0A: return 0xFFFF
         default: return 0
@@ -135,7 +135,7 @@ final class Bus9: ARMBus {
         case 0x03: return wramOffset(a).map { s.sharedWRAM.read8($0) } ?? 0
         case 0x04: return UInt8(truncatingIfNeeded: ioRead(a & ~3) >> ((a & 3) * 8))
         case 0x05: return s.palette.read8(a)
-        case 0x06: return isLCDC(a) ? s.vram.read8(a &- 0x0680_0000) : 0
+        case 0x06: return s.vramOffset9(a).map { s.vram.read8(UInt32($0)) } ?? 0
         case 0x07: return s.oam.read8(a)
         case 0x08, 0x09, 0x0A: return 0xFF
         default: return 0
@@ -152,9 +152,6 @@ final class Bus9: ARMBus {
         return read16(a)
     }
 
-    /// The LCDC window onto all VRAM banks, 0x06800000-0x068A3FFF.
-    @inline(__always) private func isLCDC(_ a: UInt32) -> Bool { a >= 0x0680_0000 && a < 0x068A_4000 }
-
     // MARK: - Writes
 
     @inline(__always) func write32(_ a: UInt32, _ v: UInt32) {
@@ -165,7 +162,7 @@ final class Bus9: ARMBus {
         case 0x03: if let o = wramOffset(a) { s.sharedWRAM.write32(o, v) }
         case 0x04: ioWrite(a & ~3, v, mask: 0xFFFF_FFFF)
         case 0x05: s.palette.write32(a, v)
-        case 0x06: if isLCDC(a) { s.vram.write32(a &- 0x0680_0000, v) }
+        case 0x06: if let o = s.vramOffset9(a) { s.vram.write32(UInt32(o), v) }
         case 0x07: s.oam.write32(a, v)
         default: break
         }
@@ -181,7 +178,7 @@ final class Bus9: ARMBus {
             let shift = (a & 2) * 8
             ioWrite(a & ~3, UInt32(v) << shift, mask: 0xFFFF << shift)
         case 0x05: s.palette.write16(a, v)
-        case 0x06: if isLCDC(a) { s.vram.write16(a &- 0x0680_0000, v) }
+        case 0x06: if let o = s.vramOffset9(a) { s.vram.write16(UInt32(o), v) }
         case 0x07: s.oam.write16(a, v)
         default: break
         }
@@ -205,7 +202,7 @@ final class Bus9: ARMBus {
     func ioRead(_ a: UInt32) -> UInt32 {
         if let v = s.ioReadCommon(cpu: 0, a) { return v }
         switch a {
-        case 0x0400_0000: return s.dispcntA
+        case 0x0400_0000...0x0400_006C: return s.engineA.read(a - 0x0400_0000)
         case 0x0400_00E0...0x0400_00EC: return dmaFill[Int((a - 0x0400_00E0) / 4)]
         case 0x0400_0204: return exmemcnt
         case 0x0400_0240: return UInt32(s.vramcnt[0]) | UInt32(s.vramcnt[1]) << 8 | UInt32(s.vramcnt[2]) << 16 | UInt32(s.vramcnt[3]) << 24
@@ -226,7 +223,8 @@ final class Bus9: ARMBus {
         case 0x0400_02BC: return UInt32(truncatingIfNeeded: s.math.sqrtParameter >> 32)
         case 0x0400_0300: return postflg
         case 0x0400_0304: return s.powcnt1
-        case 0x0400_1000: return s.dispcntB
+        case 0x0400_1000...0x0400_106C: return s.engineB.read(a - 0x0400_1000)
+        case 0x0400_0400...0x0400_06A3: return s.gpu3D.readGeometryRegister(a)
         default: return 0
         }
     }
@@ -240,7 +238,7 @@ final class Bus9: ARMBus {
             return (old & ~(0xFFFF_FFFF << shift)) | UInt64(merge(part)) << shift
         }
         switch a {
-        case 0x0400_0000: s.dispcntA = merge(s.dispcntA)
+        case 0x0400_0000...0x0400_006C: s.engineA.write(a - 0x0400_0000, v, mask: mask)
         case 0x0400_00E0...0x0400_00EC:
             let i = Int((a - 0x0400_00E0) / 4)
             dmaFill[i] = merge(dmaFill[i])
@@ -261,7 +259,9 @@ final class Bus9: ARMBus {
         case 0x0400_02BC: s.math.sqrtParameter = merge64(s.math.sqrtParameter, high: true); s.math.squareRoot()
         case 0x0400_0300: postflg = merge(postflg) & 3
         case 0x0400_0304: s.powcnt1 = merge(s.powcnt1) & 0x820F
-        case 0x0400_1000: s.dispcntB = merge(s.dispcntB)
+        case 0x0400_1000...0x0400_106C: s.engineB.write(a - 0x0400_1000, v, mask: mask)
+        case 0x0400_0320...0x0400_03BF: s.gpu3D.writeRenderRegister(a, v, mask: mask)
+        case 0x0400_0400...0x0400_06A3: s.gpu3D.writeGeometryRegister(a, v, mask: mask)
         default: break
         }
     }
