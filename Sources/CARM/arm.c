@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The ARM11 fast path. Every handler either completes its instruction or
-// returns CARM11ExitSlow before changing any state, so the Swift interpreter can
-// run that instruction from scratch. Encodings from the ARM Architecture
-// Reference Manual (ARMv6).
+// The ARM fast path. Every handler either completes its instruction or returns
+// CARMExitSlow before changing any state, so the Swift interpreter can run that
+// instruction from scratch. Encodings from the ARM Architecture Reference Manual
+// (ARMv6); instructions that ARMv4 or ARMv5 lack or run differently go back to
+// the interpreter on those cores.
 
-#include "carm11.h"
+#include "carm.h"
 
 #include <string.h>
 
@@ -36,13 +37,13 @@ static void build_condition_table(void) {
     condition_table_ready = 1;
 }
 
-static inline uint8_t *host(const CARM11State *s, uint32_t address) {
+static inline uint8_t *host(const CARMState *s, uint32_t address) {
     uint8_t *page = s->pages[address >> 12];
     return page ? page + (address & 0xFFF) : NULL;
 }
 
 /// A pointer to `size` bytes at `address` within one page, or NULL.
-static inline uint8_t *span(const CARM11State *s, uint32_t address, uint32_t size) {
+static inline uint8_t *span(const CARMState *s, uint32_t address, uint32_t size) {
     if (UNLIKELY((address & 0xFFF) + size > 0x1000)) return NULL;
     return host(s, address);
 }
@@ -301,7 +302,7 @@ static void build_tables(void) {
     DISPATCH_SAME_PAGE(); \
 } while (0)
 
-CARM11Exit carm11_run(CARM11State *s) {
+CARMExit carm_run(CARMState *s) {
     if (UNLIKELY(!decode_ready)) build_tables();
     uint32_t *regs = s->regs;
     uint32_t pc = regs[15];
@@ -310,7 +311,10 @@ CARM11Exit carm11_run(CARM11State *s) {
     const uint64_t start = cycles;
     uint64_t stop = 0;
     uint32_t cpsr = s->cpsr;
-    CARM11Exit exit_reason = CARM11ExitTarget;
+    const uint32_t arch = s->arch;
+    // STR and STM of r15 store the instruction's address plus 8 on ARMv6, plus 12 before.
+    const uint32_t pc_stored = arch >= 6 ? 8 : 12;
+    CARMExit exit_reason = CARMExitTarget;
     uint32_t op = 0;
     uint32_t next = 0;
     uint32_t code_tag = 0xFFFFFFFFu;
@@ -339,7 +343,7 @@ dispatch:
     {
         // The current code page is cached: most instructions follow one in the same page.
         if (UNLIKELY((pc >> 12) != code_tag)) {
-            code_base = s->pages[pc >> 12];
+            code_base = s->code_pages[pc >> 12];
             if (code_base == NULL || (pc & 3)) goto slow;
             code_tag = pc >> 12;
         }
@@ -351,13 +355,13 @@ conditional: {
         if (cond != 0xE) {
             if (UNLIKELY(cond == 0xF)) {
                 // Unconditional space: only BLX immediate here.
-                if ((op & 0x0E000000u) != 0x0A000000u) goto slow;
+                if ((op & 0x0E000000u) != 0x0A000000u || arch < 5) goto slow;
                 int32_t offset = ((int32_t)(op << 8) >> 6) | (int32_t)((op >> 23) & 2);
                 regs[14] = pc + 4;
                 pc = pc + 8 + (uint32_t)offset;
                 cpsr |= T_FLAG;
                 RETIRE();
-                exit_reason = CARM11ExitThumb;
+                exit_reason = CARMExitThumb;
                 goto out;
             }
             if (!((condition_table[cpsr >> 28] >> cond) & 1)) NEXT_SEQ();
@@ -428,8 +432,8 @@ k_half: {
         store16(p, (uint16_t)regs[rd]);
         if (writesBack) regs[rn] = offsetAddress;
     } else {
-        // LDRD (2) and STRD (3) need an even register pair.
-        if ((rd & 1) || rd == 14) goto slow;
+        // LDRD (2) and STRD (3), from ARMv5, need an even register pair.
+        if ((rd & 1) || rd == 14 || arch < 5) goto slow;
         uint8_t *p = span(s, address, 8);
         if (!p) goto slow;
         if (kind == 2) {
@@ -447,7 +451,7 @@ k_half: {
 }
 
 k_bx: {
-    if ((op & 0x000FFF00u) != 0x000FFF00u) goto slow;
+    if ((op & 0x000FFF00u) != 0x000FFF00u || ((op & 0x20) && arch < 5)) goto slow;
     uint32_t rm = op & 0xF;
     uint32_t destination = rm == 15 ? pc + 8 : regs[rm];
     if (op & 0x20) regs[14] = pc + 4;
@@ -455,7 +459,7 @@ k_bx: {
         pc = destination & ~1u;
         cpsr |= T_FLAG;
         RETIRE();
-        exit_reason = CARM11ExitThumb;
+        exit_reason = CARMExitThumb;
         goto out;
     }
     NEXT(destination & ~3u);
@@ -463,7 +467,7 @@ k_bx: {
 
 k_clz: {
     uint32_t rd = (op >> 12) & 0xF, rm = op & 0xF;
-    if (rd == 15 || rm == 15 || (op & 0x000F0F00u) != 0x000F0F00u) goto slow;
+    if (rd == 15 || rm == 15 || (op & 0x000F0F00u) != 0x000F0F00u || arch < 5) goto slow;
     regs[rd] = regs[rm] ? (uint32_t)__builtin_clz(regs[rm]) : 32;
     NEXT_SEQ();
 }
@@ -483,7 +487,8 @@ k_ldr_reg: {
         offset = op & 0xFFF;
     }
     int writesBack = !pre || writeback;
-    if ((writesBack && rn == 15) || (load && byte && rd == 15)) goto slow;
+    // Before ARMv5 a load to r15 never enters Thumb state; the interpreter handles it.
+    if ((writesBack && rn == 15) || (load && rd == 15 && (byte || arch < 5))) goto slow;
     uint32_t base = rn == 15 ? pc + 8 : regs[rn];
     uint32_t offsetAddress = up ? base + offset : base - offset;
     uint32_t address = pre ? offsetAddress : base;
@@ -498,14 +503,14 @@ k_ldr_reg: {
                 pc = value & ~1u;
                 cpsr |= T_FLAG;
                 RETIRE();
-                exit_reason = CARM11ExitThumb;
+                exit_reason = CARMExitThumb;
                 goto out;
             }
             NEXT(value & ~3u);
         }
         regs[rd] = value;
     } else {
-        uint32_t value = rd == 15 ? pc + 8 : regs[rd];
+        uint32_t value = rd == 15 ? pc + pc_stored : regs[rd];
         if (byte) *p = (uint8_t)value; else store32(p, value);
         if (writesBack) regs[rn] = offsetAddress;
     }
@@ -515,7 +520,7 @@ k_ldr_reg: {
 k_media: {
     // Sign and zero extension and byte reversal; the rest in Swift.
     uint32_t rd = (op >> 12) & 0xF, rn = (op >> 16) & 0xF, rm = op & 0xF;
-    if (rd == 15 || rm == 15) goto slow;
+    if (rd == 15 || rm == 15 || arch < 6) goto slow;
     if ((op & 0x0F8003F0u) == 0x06800070u) {
         uint32_t value = ror32(regs[rm], ((op >> 10) & 3) * 8);
         uint32_t extended;
@@ -548,6 +553,8 @@ k_block: {
     uint32_t rn = (op >> 16) & 0xF;
     uint32_t list = op & 0xFFFF;
     if (rn == 15 || list == 0) goto slow;
+    // Older cores differ on loading r15 and on writing back a base that is in the list.
+    if (arch < 6 && (((op >> 20) & 1 && (list & 0x8000) && arch < 5) || ((op >> 21) & 1 && (list >> rn) & 1))) goto slow;
     uint32_t count = (uint32_t)__builtin_popcount(list);
     uint32_t pre = (op >> 24) & 1, up = (op >> 23) & 1, writeback = (op >> 21) & 1, load = (op >> 20) & 1;
     uint32_t base = regs[rn];
@@ -570,7 +577,7 @@ k_block: {
                 pc = value & ~1u;
                 cpsr |= T_FLAG;
                 RETIRE();
-                exit_reason = CARM11ExitThumb;
+                exit_reason = CARMExitThumb;
                 goto out;
             }
             NEXT(value & ~3u);
@@ -578,7 +585,7 @@ k_block: {
     } else {
         uint32_t i = 0;
         for (uint32_t r = 0; r < 16; r++) {
-            if ((list >> r) & 1) { store32(p + i * 4, r == 15 ? pc + 8 : regs[r]); i++; }
+            if ((list >> r) & 1) { store32(p + i * 4, r == 15 ? pc + pc_stored : regs[r]); i++; }
         }
         if (writeback) regs[rn] = newBase;
     }
@@ -593,7 +600,7 @@ k_b: {
 }
 
 slow:
-    exit_reason = CARM11ExitSlow;
+    exit_reason = CARMExitSlow;
 out:
     regs[15] = pc;
     s->cpsr = cpsr;
