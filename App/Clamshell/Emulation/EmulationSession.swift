@@ -36,6 +36,7 @@ final class EmulationSession: Sendable {
     private let fastForward = Atomic<Bool>(false)
     private let saveRequested = Atomic<Bool>(false)
     private let lastError = Mutex<String?>(nil)
+    private let diagnosticsText = Mutex<String>("")
 
     init(romURL: URL, saveURL: URL) {
         self.romURL = romURL
@@ -45,6 +46,8 @@ final class EmulationSession: Sendable {
     }
 
     var errorMessage: String? { lastError.withLock { $0 } }
+    /// The core's state and the measured frame rate, refreshed twice a second.
+    var diagnostics: String { diagnosticsText.withLock { $0 } }
 
     func start() {
         let thread = Thread { [self] in run() }
@@ -73,6 +76,8 @@ final class EmulationSession: Sendable {
 
         let frameDuration = 1 / coreType.descriptor.frameRate
         var lastSaved = core.batterySave
+        var framesSinceReport = 0
+        var reportStart = Date()
         while !stopped.load(ordering: .relaxed) {
             core.setLidClosed(lidClosed.load(ordering: .relaxed))
             // A closed lid keeps running: the game sees the hinge bit and sleeps itself.
@@ -85,6 +90,15 @@ final class EmulationSession: Sendable {
                 continue
             }
             core.runFrame()
+            framesSinceReport += 1
+            let elapsed = Date().timeIntervalSince(reportStart)
+            if elapsed >= 0.5 {
+                let fps = Double(framesSinceReport) / elapsed
+                let text = String(format: "%.1f fps\n", fps) + core.diagnostics
+                diagnosticsText.withLock { $0 = text }
+                framesSinceReport = 0
+                reportStart = Date()
+            }
 
             if saveRequested.exchange(false, ordering: .relaxed), let save = core.batterySave, save != lastSaved {
                 writeSave(save)

@@ -203,5 +203,12 @@ public final class CTR: EmulatorCore {
     public var log: [String] { kernel.log }
     public var hasExited: Bool { kernel.exited }
     public var instructionsRetired: UInt64 { cpu.instructionsRetired }
+
+    public var diagnostics: String {
+        let pc = String(cpu.pc, radix: 16, uppercase: true)
+        var lines = ["pc \(pc)\(cpu.halted ? " halt" : "") threads \(kernel.threads.count) faults \(memory.faults) draws \(gsp.pica.drawCalls) fragments \(gsp.pica.rasterizer.fragments)"]
+        lines += kernel.log.suffix(4)
+        return lines.joined(separator: "\n")
+    }
     public var memoryFaults: Int { memory.faults }
 }

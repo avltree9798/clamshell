@@ -84,4 +84,11 @@ public protocol EmulatorCore: AnyObject {
 
     /// Sets the console's lid switch. On iPhone Duo this follows the hinge.
     func setLidClosed(_ closed: Bool)
+
+    /// A few lines of internal state for the on-screen diagnostics readout.
+    var diagnostics: String { get }
+}
+
+public extension EmulatorCore {
+    var diagnostics: String { "" }
 }

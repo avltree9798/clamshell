@@ -28,6 +28,9 @@ final class GSPService: Service {
     /// What the top (0) and bottom (1) screens show.
     var screens = [ScreenFramebuffer(), ScreenFramebuffer()]
 
+    /// The 3D GPU that runs the command lists GX command 1 hands over.
+    lazy var pica = PICA(memory: memory)
+
     override func handle(_ ipc: inout IPC) {
         switch ipc.command {
         case 0x0001, 0x0002:  // WriteHWRegs, WriteHWRegsWithMask
@@ -113,13 +116,18 @@ final class GSPService: Service {
             case 0x00:  // RequestDma(source, destination, size)
                 copy(from: word(1), to: word(2), count: Int(word(3)))
                 raise(.dma)
-            case 0x01:  // ProcessCommandList: no PICA200 renderer yet
+            case 0x01:  // ProcessCommandList(address, size, flags)
+                pica.run(commandList: word(1), size: Int(word(2)))
                 raise(.p3d)
-            case 0x02:  // MemoryFill(start0, value0, end0, start1, value1, end1, widths)
+            case 0x02:  // MemoryFill(start0, value0, end0, start1, value1, end1, controls)
                 fill(start: word(1), value: word(2), end: word(3), control: word(7) & 0xFFFF)
                 if word(4) != 0 { fill(start: word(4), value: word(5), end: word(6), control: word(7) >> 16) }
                 raise(.psc0)
-            case 0x03, 0x04:  // DisplayTransfer, TextureCopy: no tiled conversion yet
+            case 0x03:  // DisplayTransfer(input, output, input size, output size, flags)
+                displayTransfer(input: word(1), output: word(2), inputSize: word(3), outputSize: word(4), flags: word(5))
+                raise(.ppf)
+            case 0x04:  // TextureCopy(input, output, size, input line, output line, flags)
+                textureCopy(input: word(1), output: word(2), size: Int(word(3)), inputLine: word(4), outputLine: word(5))
                 raise(.ppf)
             default:
                 break
@@ -139,11 +147,10 @@ final class GSPService: Service {
     }
 
     private func fill(start: UInt32, value: UInt32, end: UInt32, control: UInt32) {
-        // Addresses are physical, in 8-byte units.
-        guard start != 0, end > start else { return }
+        // Virtual addresses of the first byte and the end of the range.
+        guard start != 0, end > start, let base = memory.gpuHost(start, size: Int(end - start)) else { return }
         let width = (control >> 8) & 3  // 0: 16-bit, 1: 24-bit, 2/3: 32-bit
-        guard let base = memory.host(physical: start << 3) else { return }
-        let bytes = Int((end - start) << 3)
+        let bytes = Int(end - start)
         switch width {
         case 0:
             for i in stride(from: 0, to: bytes - 1, by: 2) { base.storeBytes(of: UInt16(truncatingIfNeeded: value), toByteOffset: i, as: UInt16.self) }
@@ -155,6 +162,74 @@ final class GSPService: Service {
             }
         default:
             for i in stride(from: 0, to: bytes - 3, by: 4) { base.storeBytes(of: value, toByteOffset: i, as: UInt32.self) }
+        }
+    }
+
+    /// Copies a framebuffer with format conversion, tiling or untiling, optional vertical
+    /// flip and 2× downscaling, the way the GPU's display transfer engine does (as Citra
+    /// documents it). Sizes are width | height << 16.
+    func displayTransfer(input: UInt32, output: UInt32, inputSize: UInt32, outputSize: UInt32, flags: UInt32) {
+        let inputWidth = Int(inputSize & 0xFFFF), inputHeight = Int(inputSize >> 16)
+        let scaling = (flags >> 24) & 3
+        let horizontal = scaling != 0 ? 1 : 0, vertical = scaling == 2 ? 1 : 0
+        let outputWidth = Int(outputSize & 0xFFFF) >> horizontal, outputHeight = Int(outputSize >> 16) >> vertical
+        let flip = flags & 1 != 0, inputLinear = flags & 2 != 0, dontSwizzle = flags & 0x20 != 0
+        let formats: [PICATextureFormat] = [.rgba8, .rgb8, .rgb565, .rgb5a1, .rgba4]
+        let inFormat = formats[Int(min((flags >> 8) & 7, 4))], outFormat = formats[Int(min((flags >> 12) & 7, 4))]
+        let inBPP = inFormat.bits / 8, outBPP = outFormat.bits / 8
+        guard inputWidth > 0, outputWidth > 0, outputHeight > 0,
+              let source = memory.gpuHost(input, size: inputWidth * inputHeight * inBPP),
+              let destination = memory.gpuHost(output, size: outputWidth * outputHeight * outBPP) else { return }
+
+        if flags & 8 != 0 { return }  // texture copy through this command: unused by libctru
+        for y in 0..<outputHeight {
+            let inputY = y << vertical
+            let outputY = flip ? outputHeight - 1 - y : y
+            guard inputY < inputHeight else { break }
+            for x in 0..<outputWidth {
+                let inputX = x << horizontal
+                let sourceOffset: Int, destinationOffset: Int
+                if inputLinear {
+                    sourceOffset = (inputX + inputY * inputWidth) * inBPP
+                    destinationOffset = dontSwizzle ? (x + outputY * outputWidth) * outBPP
+                        : PICAMemoryLayout.tiledOffset(x, outputY, width: outputWidth, bytesPerPixel: outBPP)
+                } else {
+                    sourceOffset = PICAMemoryLayout.tiledOffset(inputX, inputY, width: inputWidth, bytesPerPixel: inBPP)
+                    destinationOffset = dontSwizzle ? PICAMemoryLayout.tiledOffset(x, outputY, width: outputWidth, bytesPerPixel: outBPP)
+                        : (x + outputY * outputWidth) * outBPP
+                }
+                let p = source + sourceOffset
+                var color = PICATexture.decode(inFormat, p)
+                if scaling == 1 {
+                    color = (color &+ PICATexture.decode(inFormat, p + inBPP)) / 2
+                } else if scaling == 2 {
+                    color = (color &+ PICATexture.decode(inFormat, p + inBPP) &+ PICATexture.decode(inFormat, p + 2 * inBPP)
+                        &+ PICATexture.decode(inFormat, p + 3 * inBPP)) / 4
+                }
+                PICARasterizer.encode(outFormat, color, destination + destinationOffset)
+            }
+        }
+    }
+
+    /// Copies `size` bytes in lines: each line is width bytes followed by a gap that is
+    /// skipped. Line settings are width | gap << 16, in 16-byte units.
+    func textureCopy(input: UInt32, output: UInt32, size: Int, inputLine: UInt32, outputLine: UInt32) {
+        let total = size & ~15
+        guard total > 0 else { return }
+        var inWidth = Int(inputLine & 0xFFFF) * 16, inGap = Int(inputLine >> 16) * 16
+        var outWidth = Int(outputLine & 0xFFFF) * 16, outGap = Int(outputLine >> 16) * 16
+        if inWidth == 0 { inWidth = total; inGap = 0 }
+        if outWidth == 0 { outWidth = total; outGap = 0 }
+        let inSpan = (total / inWidth + 1) * (inWidth + inGap), outSpan = (total / outWidth + 1) * (outWidth + outGap)
+        guard let source = memory.gpuHost(input, size: min(inSpan, total + inSpan)),
+              let destination = memory.gpuHost(output, size: min(outSpan, total + outSpan)) else { return }
+        var remaining = total, i = 0, o = 0, inLine = 0, outLine = 0
+        while remaining > 0 {
+            let n = min(inWidth - inLine, outWidth - outLine, remaining)
+            destination.advanced(by: o).copyMemory(from: source.advanced(by: i), byteCount: n)
+            i += n; o += n; inLine += n; outLine += n; remaining -= n
+            if inLine == inWidth { i += inGap; inLine = 0 }
+            if outLine == outWidth { o += outGap; outLine = 0 }
         }
     }
 }

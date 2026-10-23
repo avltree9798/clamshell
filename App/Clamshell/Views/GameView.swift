@@ -16,6 +16,7 @@ struct GameView: View {
     @State private var hinge: HingeState = .none
     @State private var fold: CGRect?
     @State private var controllerConnected = GCController.controllers().isEmpty == false
+    @AppStorage("showDiagnostics") private var showDiagnostics = true
 
     /// Session, presenter and audio for the lifetime of this view.
     @MainActor final class Runtime {
@@ -75,6 +76,20 @@ struct GameView: View {
                     if !controllerConnected {
                         ControlsOverlay(layout: layout, input: runtime.session.input)
                     }
+                    // Internal state, while games are being brought up.
+                    if showDiagnostics {
+                        TimelineView(.periodic(from: .now, by: 0.5)) { _ in
+                            Text(runtime.session.diagnostics)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(.green)
+                                .padding(6)
+                                .background(.black.opacity(0.7), in: RoundedRectangle(cornerRadius: 6))
+                                .fixedSize()
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                        .padding(8)
+                        .allowsHitTesting(false)
+                    }
                     // The session reports a failed load from its own thread; check once a second.
                     TimelineView(.periodic(from: .now, by: 1)) { _ in
                         if let message = runtime.session.errorMessage {
@@ -89,6 +104,9 @@ struct GameView: View {
                     .allowsHitTesting(false)
                 }
                 Button("Close", systemImage: "xmark") { dismiss() }
+                    .contextMenu {
+                        Toggle("Show diagnostics", isOn: $showDiagnostics)
+                    }
                     .labelStyle(.iconOnly)
                     .font(.system(size: 14, weight: .bold))
                     .foregroundStyle(.white.opacity(0.75))

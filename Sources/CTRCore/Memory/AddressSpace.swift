@@ -123,6 +123,15 @@ final class AddressSpace {
         return nil
     }
 
+    /// Host pointer for `size` bytes at a virtual address in FCRAM or VRAM, as the GPU
+    /// sees them through physical memory; nil unless the whole range is inside one.
+    func gpuHost(_ virtual: UInt32, size: Int) -> UnsafeMutableRawPointer? {
+        let start = physical(virtual)
+        guard start != 0, let host = host(physical: start), size >= 0,
+              let last = self.host(physical: start &+ UInt32(max(size, 1) - 1)), last - host == max(size, 1) - 1 else { return nil }
+        return host
+    }
+
     func region(containing address: UInt32) -> (base: UInt32, size: UInt32, permission: MemoryPermission, state: MemoryState) {
         for r in regions where address >= r.base && address &- r.base < r.size { return r }
         // Free space between mappings.

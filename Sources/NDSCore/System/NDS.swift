@@ -93,6 +93,45 @@ public final class NDS: EmulatorCore {
     /// Instructions executed by both CPUs since power-on, for benchmarks.
     public var instructionsRetired: UInt64 { arm9.instructionsRetired &+ arm7.instructionsRetired }
 
+    /// The last few I/O addresses neither bus handles, per CPU, for diagnostics.
+    private(set) var unhandledIO: [[UInt32]] = [[], []]
+    private(set) var frameCount = 0
+
+    func noteUnhandledIO(cpu: Int, _ address: UInt32) {
+        guard !unhandledIO[cpu].contains(address) else { return }
+        unhandledIO[cpu].append(address)
+        if unhandledIO[cpu].count > 6 { unhandledIO[cpu].removeFirst() }
+    }
+
+    /// True when the ARM9 binary's first 2 KB (the secure area) is still encrypted:
+    /// a decrypted dump starts it with 0xE7FFDEFF twice.
+    var secureAreaEncrypted: Bool {
+        let rom = cartridge.rom
+        guard rom.count >= 0x4008 else { return false }
+        func word(_ o: Int) -> UInt32 { UInt32(rom[o]) | UInt32(rom[o + 1]) << 8 | UInt32(rom[o + 2]) << 16 | UInt32(rom[o + 3]) << 24 }
+        let arm9Offset = Int(word(0x20))
+        guard arm9Offset == 0x4000 else { return false }
+        return !(word(0x4000) == 0xE7FF_DEFF && word(0x4004) == 0xE7FF_DEFF)
+    }
+
+    public var diagnostics: String {
+        func hex(_ v: UInt32, _ digits: Int = 8) -> String {
+            let s = String(v, radix: 16, uppercase: true)
+            return String(repeating: "0", count: max(digits - s.count, 0)) + s
+        }
+        func cpu(_ name: String, _ pc: UInt32, _ cpsr: UInt32, _ halted: Bool, _ irq: InterruptController) -> String {
+            "\(name) pc \(hex(pc)) \(cpsr & 0x20 != 0 ? "T" : "A")\(halted ? " halt" : "") ime \(irq.ime) ie \(hex(irq.ie)) if \(hex(irq.iflags))"
+        }
+        var lines = ["\(cartridge.title) [\(cartridge.gameCode)] frame \(frameCount)\(secureAreaEncrypted ? " SECURE AREA ENCRYPTED" : "")",
+                     cpu("ARM9", arm9.pc, arm9.rawCPSR, arm9.halted, irq9),
+                     cpu("ARM7", arm7.pc, arm7.rawCPSR, arm7.halted, irq7),
+                     "dispcnt A \(hex(engineA.dispcnt)) B \(hex(engineB.dispcnt)) powcnt \(hex(powcnt1, 4)) vram \(vramcnt.map { hex(UInt32($0), 2) }.joined(separator: " "))",
+                     "ipc sync \(hex(ipc.readSync(cpu: 0), 4))/\(hex(ipc.readSync(cpu: 1), 4)) fifo \(ipc.fifo[0].count)/\(ipc.fifo[1].count)"]
+        if !unhandledIO[0].isEmpty { lines.append("io9? " + unhandledIO[0].map { hex($0) }.joined(separator: " ")) }
+        if !unhandledIO[1].isEmpty { lines.append("io7? " + unhandledIO[1].map { hex($0) }.joined(separator: " ")) }
+        return lines.joined(separator: "\n")
+    }
+
     let irq9 = InterruptController(cpuIndex: 0)
     let irq7 = InterruptController(cpuIndex: 1)
     let timers9: TimerUnit
@@ -208,6 +247,7 @@ public final class NDS: EmulatorCore {
             while let event = scheduler.popDue() { handle(event) }
         }
         frameStart = target
+        frameCount += 1
         generateSilence()
     }
 
