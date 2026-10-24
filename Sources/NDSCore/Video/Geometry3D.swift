@@ -335,10 +335,10 @@ final class GPU3D {
         case 0x25: vertex(Int64(Int16(truncatingIfNeeded: p[0])), Int64(Int16(truncatingIfNeeded: p[0] >> 16)), lastVertex.2)
         case 0x26: vertex(Int64(Int16(truncatingIfNeeded: p[0])), lastVertex.1, Int64(Int16(truncatingIfNeeded: p[0] >> 16)))
         case 0x27: vertex(lastVertex.0, Int64(Int16(truncatingIfNeeded: p[0])), Int64(Int16(truncatingIfNeeded: p[0] >> 16)))
-        case 0x28:
-            vertex(Int64(Int16(truncatingIfNeeded: lastVertex.0 + (Self.signed10(p[0]) << 3))),
-                   Int64(Int16(truncatingIfNeeded: lastVertex.1 + (Self.signed10(p[0] >> 10) << 3))),
-                   Int64(Int16(truncatingIfNeeded: lastVertex.2 + (Self.signed10(p[0] >> 20) << 3))))
+        case 0x28:  // VTX_DIFF: 1.0.9 offsets, which are whole steps of the 1.3.12 coordinates
+            vertex(Int64(Int16(truncatingIfNeeded: lastVertex.0 + Self.signed10(p[0]))),
+                   Int64(Int16(truncatingIfNeeded: lastVertex.1 + Self.signed10(p[0] >> 10))),
+                   Int64(Int16(truncatingIfNeeded: lastVertex.2 + Self.signed10(p[0] >> 20))))
         case 0x29: pendingAttributes = p[0]
         case 0x2A: textureParameters = p[0]
         case 0x2B: paletteBase = p[0] & 0x1FFF

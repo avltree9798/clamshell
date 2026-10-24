@@ -63,6 +63,25 @@ import Testing
         #expect(s.pixel(5, 5) == argb(0))  // clear colour has alpha 0: the backdrop shows
     }
 
+    @Test func vertexDiffAddsWholeSteps() throws {
+        // VTX_DIFF offsets are 1.0.9, the same step as the 1.3.12 coordinates' last bit.
+        func diff(_ x: Int32, _ y: Int32, _ z: Int32) -> UInt32 {
+            UInt32(bitPattern: x & 0x3FF | (y & 0x3FF) << 10 | (z & 0x3FF) << 20)
+        }
+        let s = try scene()
+        s.command(0x40, 0)
+        s.command(0x20, Self.red)
+        s.vertex(-256, -256, 0)
+        s.command(0x28, diff(511, 0, 0))
+        s.command(0x28, diff(-255, 511, 0))
+        s.command(0x41)
+        s.show()
+        // Each side is 1/8 of the view, about 16 pixels: the middle is covered, 20 pixels out is not.
+        #expect(s.pixel(128, 96) == argb(Self.red))
+        #expect(s.pixel(148, 96) == argb(0))
+        #expect(s.pixel(128, 116) == argb(0))
+    }
+
     @Test func nearerQuadWinsDepthTest() throws {
         let s = try scene()
         s.command(0x40, 1)
