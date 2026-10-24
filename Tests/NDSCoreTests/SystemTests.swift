@@ -139,4 +139,27 @@ import Testing
         for i in 0..<0x200 { #expect(nds.bus9.read8(0x0200_0000 + UInt32(i)) == UInt8(truncatingIfNeeded: i * 7)) }
         #expect(nds.bus9.read32(0x0400_01A4) & 0x8000_0000 == 0)
     }
+
+    /// Talks to the save chip over AUXSPI: the first one-byte read reveals a 2-byte
+    /// address EEPROM, then a write sticks and reads back.
+    @Test func backupEEPROMIsDetectedAndWritable() {
+        let nds = NDS()
+        func spi(_ bytes: [UInt8]) -> [UInt8] {
+            var out: [UInt8] = []
+            for (i, b) in bytes.enumerated() {
+                let hold: UInt32 = i < bytes.count - 1 ? 0x40 : 0
+                nds.bus9.write16(0x0400_01A0, UInt16(0xA000 | hold))
+                nds.bus9.write8(0x0400_01A2, b)
+                out.append(nds.bus9.read8(0x0400_01A2))
+            }
+            return out
+        }
+        _ = spi([0x03, 0x00, 0x10, 0x00])
+        #expect(nds.cartridge.backupChip.kind == .eeprom)
+        _ = spi([0x06])
+        #expect(spi([0x05, 0x00])[1] & 2 != 0)
+        _ = spi([0x02, 0x00, 0x10, 0xAB, 0xCD])
+        #expect(spi([0x03, 0x00, 0x10, 0x00, 0x00]).suffix(2) == [0xAB, 0xCD])
+        #expect(nds.batterySave?.count == 64 << 10)
+    }
 }

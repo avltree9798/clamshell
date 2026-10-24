@@ -6,7 +6,13 @@ import EmuKit
 /// decrypted). Supports the commands games use after boot: data read and chip ID.
 final class Cartridge {
     private(set) var rom: [UInt8] = []
-    var backup: [UInt8] = []
+    let backupChip = BackupMemory()
+    var backup: [UInt8] {
+        get { backupChip.data }
+        set { backupChip.load(newValue) }
+    }
+    /// AUXSPIDATA: the byte the save chip sent back in the last transfer.
+    var auxSPIData: UInt8 = 0
     weak var system: NDS?
 
     var romControl: UInt32 = 0
@@ -36,6 +42,19 @@ final class Cartridge {
     var gameCode: String {
         guard rom.count >= 16 else { return "" }
         return String(decoding: rom[12..<16], as: UTF8.self)
+    }
+
+    /// AUXSPICNT bit 15 enables the bus, bit 13 selects SPI (backup) mode, bit 6 keeps
+    /// the chip selected after the byte.
+    func writeAuxSPIControl(_ value: UInt16) {
+        auxSPIControl = value & ~0x80  // bit 7 (busy) is read-only, and transfers are instant
+        if value & 0x8000 == 0 { backupChip.deselect() }
+    }
+
+    func writeAuxSPIData(_ value: UInt8) {
+        guard auxSPIControl & 0xA000 == 0xA000 else { return }
+        auxSPIData = backupChip.transfer(value)
+        if auxSPIControl & 0x40 == 0 { backupChip.deselect() }
     }
 
     /// Bit 23 = a data word is ready, bit 31 = a transfer is in progress.

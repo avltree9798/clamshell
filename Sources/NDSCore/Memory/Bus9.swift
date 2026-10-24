@@ -235,6 +235,7 @@ final class Bus9: ARMBus {
     // MARK: - I/O registers
 
     func ioRead(_ a: UInt32) -> UInt32 {
+        s.lastIORead[0] = a
         if let v = s.ioReadCommon(cpu: 0, a) { return v }
         switch a {
         case 0x0400_0000...0x0400_006C: return s.engineA.read(a - 0x0400_0000)

@@ -29,7 +29,7 @@ extension NDS {
         case 0x0400_0184:
             return ipc.readControl(cpu: cpu)
         case 0x0400_01A0:
-            return UInt32(cartridge.auxSPIControl)
+            return UInt32(cartridge.auxSPIControl) | UInt32(cartridge.auxSPIData) << 16
         case 0x0400_01A4:
             return cartridge.readControl()
         case 0x0400_01A8, 0x0400_01AC:
@@ -93,9 +93,9 @@ extension NDS {
             ipc.send(cpu: cpu, v)
         case 0x0400_01A0:
             if mask & 0xFFFF != 0 {
-                cartridge.auxSPIControl = UInt16(truncatingIfNeeded: merge(UInt32(cartridge.auxSPIControl)))
+                cartridge.writeAuxSPIControl(UInt16(truncatingIfNeeded: merge(UInt32(cartridge.auxSPIControl))))
             }
-            // AUXSPIDATA (backup memory) arrives with save support in M2.
+            if mask & 0x00FF_0000 != 0 { cartridge.writeAuxSPIData(UInt8(truncatingIfNeeded: v >> 16)) }
         case 0x0400_01A4:
             cartridge.writeControl(v, mask: mask)
         case 0x0400_01A8, 0x0400_01AC:

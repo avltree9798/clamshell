@@ -138,6 +138,7 @@ final class Bus7: ARMBus {
     // MARK: - I/O registers
 
     func ioRead(_ a: UInt32) -> UInt32 {
+        s.lastIORead[1] = a
         if let v = s.ioReadCommon(cpu: 1, a) { return v }
         switch a {
         case 0x0400_0134: return extKeyIn << 16  // RCNT reads as 0

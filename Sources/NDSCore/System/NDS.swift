@@ -96,6 +96,8 @@ public final class NDS: EmulatorCore {
     /// The last few I/O addresses neither bus handles, per CPU, for diagnostics.
     private(set) var unhandledIO: [[UInt32]] = [[], []]
     private(set) var unhandledSWI: [[UInt32]] = [[], []]
+    /// The last I/O register each CPU read: what a busy loop is polling.
+    var lastIORead: [UInt32] = [0, 0]
     private(set) var frameCount = 0
 
     func noteUnhandledSWI(cpu: Int, _ number: UInt32) {
@@ -125,13 +127,14 @@ public final class NDS: EmulatorCore {
             return String(repeating: "0", count: max(digits - s.count, 0)) + s
         }
         func cpu(_ name: String, _ pc: UInt32, _ cpsr: UInt32, _ halted: Bool, _ irq: InterruptController) -> String {
-            "\(name) pc \(hex(pc)) \(cpsr & 0x20 != 0 ? "T" : "A")\(halted ? " halt" : "") ime \(irq.ime) ie \(hex(irq.ie)) if \(hex(irq.iflags))"
+            "\(name) pc \(hex(pc)) \(cpsr & 0x20 != 0 ? "T" : "A") mode \(hex(cpsr & 0xFF, 2))\(halted ? " halt" : "") ime \(irq.ime) ie \(hex(irq.ie)) if \(hex(irq.iflags))"
         }
         var lines = ["\(cartridge.title) [\(cartridge.gameCode)] frame \(frameCount)\(secureAreaEncrypted ? " SECURE AREA ENCRYPTED" : "")",
                      cpu("ARM9", arm9.pc, arm9.rawCPSR, arm9.halted, irq9),
                      cpu("ARM7", arm7.pc, arm7.rawCPSR, arm7.halted, irq7),
                      "dispcnt A \(hex(engineA.dispcnt)) B \(hex(engineB.dispcnt)) powcnt \(hex(powcnt1, 4)) vram \(vramcnt.map { hex(UInt32($0), 2) }.joined(separator: " "))",
                      "bright A \(hex(engineA.regs[0x6C / 4] & 0xFFFF, 4)) B \(hex(engineB.regs[0x6C / 4] & 0xFFFF, 4)) backdrop A \(hex(UInt32(palette.read16(0)), 4)) B \(hex(UInt32(palette.read16(0x400)), 4)) dispstat \(hex(dispstat9, 4))",
+                     "last io read 9 \(hex(lastIORead[0])) 7 \(hex(lastIORead[1])) save \(cartridge.backupChip.kind.map { "\($0)" } ?? "?") \(cartridge.backup.count / 1024) KB",
                      "ipc sync \(hex(ipc.readSync(cpu: 0), 4))/\(hex(ipc.readSync(cpu: 1), 4)) fifo \(ipc.fifo[0].count)/\(ipc.fifo[1].count)"]
         if !unhandledIO[0].isEmpty { lines.append("io9? " + unhandledIO[0].map { hex($0) }.joined(separator: " ")) }
         if !unhandledIO[1].isEmpty { lines.append("io7? " + unhandledIO[1].map { hex($0) }.joined(separator: " ")) }
