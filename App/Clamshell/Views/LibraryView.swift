@@ -58,7 +58,7 @@ private struct GameCard: View {
     var body: some View {
         VStack(spacing: 12) {
             ZStack {
-                let tint = game.art?.averageColor ?? (0.2, 0.25, 0.35)
+                let tint: (r: Double, g: Double, b: Double) = game.art?.averageColor ?? (r: 0.2, g: 0.25, b: 0.35)
                 let color = Color(red: tint.r, green: tint.g, blue: tint.b)
                 LinearGradient(colors: [color.opacity(0.85), color.opacity(0.35), .black.opacity(0.6)],
                                startPoint: .topLeading, endPoint: .bottomTrailing)
