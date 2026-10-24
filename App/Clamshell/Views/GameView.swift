@@ -59,6 +59,9 @@ struct GameView: View {
                 topScreenSize: screenSize(0), bottomScreenSize: screenSize(1)))
             ZStack(alignment: .topLeading) {
                 Color.black.ignoresSafeArea()
+                if layout.fold != .zero {
+                    FoldStrip().place(layout.fold)
+                }
                 if let runtime, let presenter = runtime.presenter {
                     ScreenFrame(rect: layout.topScreen)
                     ScreenFrame(rect: layout.bottomScreen)
@@ -133,7 +136,7 @@ struct GameView: View {
                     .foregroundStyle(.green)
                     .frame(width: LayoutResolver.menuSize, height: LayoutResolver.menuSize)
                     .background(Circle().fill(.white.opacity(0.14)))
-                    .place(layout.menuButton.offsetBy(dx: 0, dy: LayoutResolver.menuSize + 8))
+                    .place(layout.menuButton.offsetBy(dx: -(LayoutResolver.menuSize + 8), dy: 0))
                 }
             }
         }
@@ -163,6 +166,23 @@ struct GameView: View {
 }
 
 /// A faint outline just outside a screen, so a dark game screen does not vanish into the background.
+/// The division between the halves of a window laid out like an open DS.
+private struct FoldStrip: View {
+    var body: some View {
+        ZStack {
+            Rectangle().fill(Color(white: 0.1))
+            GeometryReader { proxy in
+                Path { path in
+                    path.move(to: CGPoint(x: 0, y: proxy.size.height / 2))
+                    path.addLine(to: CGPoint(x: proxy.size.width, y: proxy.size.height / 2))
+                }
+                .stroke(Color(white: 0.3), style: StrokeStyle(lineWidth: 1, dash: [6, 5]))
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
 private struct ScreenFrame: View {
     let rect: CGRect
 

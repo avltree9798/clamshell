@@ -37,11 +37,17 @@ struct LayoutResult: Equatable {
     var startSelect: CGRect = .zero
     /// The button that leaves the game.
     var menuButton: CGRect = .zero
+    /// The strip between the halves when the window is laid out like an open DS without
+    /// a real hinge; it is drawn as the fold and kept clear of pixels and controls.
+    var fold: CGRect = .zero
 }
 
 /// Picks the layout. See "Audio, input and layouts" in the spec.
 ///
-/// Portrait stacks the two screens like an open DS with the controls underneath.
+/// Windows of roughly DS-like proportions (iPad, Mac windows, a folded Duo's halves)
+/// get the spec's device layout: the top screen in the upper half, a fold strip, then
+/// L and R, the touch screen, and the D-pad and face buttons in its side margins.
+/// Narrow portrait phones stack the two screens like an open DS with the controls underneath.
 /// Landscape tries three arrangements and keeps the one whose main screen is
 /// biggest: the screens stacked in a column between the D-pad and the buttons (iPad,
 /// Mac windows), side by side (wide windows without on-screen controls), or the top
@@ -57,7 +63,18 @@ enum LayoutResolver {
         if input.hinge == .partiallyOpen, let fold = input.fold {
             return fold.width >= fold.height ? clamshell(input, fold: fold) : book(input, fold: fold)
         }
+        let aspect = input.size.height > 0 ? input.size.width / input.size.height : 1
+        if (0.6...1.7).contains(aspect) { return device(input) }
         return input.size.width > input.size.height ? landscape(input) : portrait(input)
+    }
+
+    /// An open DS drawn flat: the window split by a fold strip, laid out as `clamshell`.
+    static func device(_ input: LayoutInput) -> LayoutResult {
+        let height = max(14, input.size.height * 0.022)
+        let fold = CGRect(x: 0, y: (input.size.height - height) / 2, width: input.size.width, height: height)
+        var result = clamshell(input, fold: fold)
+        result.fold = fold
+        return result
     }
 
     // MARK: - Fitting
@@ -227,8 +244,12 @@ enum LayoutResolver {
                                 width: lower.width - controlWidth * 2, height: lower.height - shoulders - smallButtonHeight - margin * 3)
         let bottom = fit(input.bottomScreenSize, in: screenArea)
         var result = LayoutResult(kind: .clamshell, topScreen: top, bottomScreen: bottom)
-        result.menuButton = CGRect(x: upper.maxX - margin - menuSize, y: margin, width: menuSize, height: menuSize)
-        guard controls else { return result }
+        guard controls else {
+            result.menuButton = CGRect(x: upper.maxX - margin - menuSize, y: margin, width: menuSize, height: menuSize)
+            return result
+        }
+        // Between L and R, just under the fold, so it never covers the top screen.
+        result.menuButton = CGRect(x: lower.midX - menuSize / 2, y: lower.minY + 2, width: menuSize, height: menuSize)
         let pad = min(controlWidth - margin * 2, bottom.height)
         result.dpad = CGRect(x: controlWidth / 2 - pad / 2, y: bottom.midY - pad / 2, width: pad, height: pad)
         result.faceButtons = CGRect(x: lower.maxX - controlWidth / 2 - pad / 2, y: bottom.midY - pad / 2, width: pad, height: pad)
