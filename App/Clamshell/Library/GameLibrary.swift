@@ -12,6 +12,8 @@ final class GameLibrary {
         let url: URL
         let title: String
         let gameCode: String
+        /// The icon and full title from the game file, when it has them.
+        var art: GameArt?
         var saveURL: URL { url.deletingPathExtension().appendingPathExtension("sav") }
     }
 
@@ -50,16 +52,22 @@ final class GameLibrary {
         }
     }
 
-    /// Reads the title and game code from the cartridge header, not from any online database.
+    /// Reads the title and game code from the cartridge header and banner, not from any online database.
     /// Homebrew (.3dsx) is listed by file name.
     private static func describe(_ url: URL) -> Game? {
         if url.pathExtension.lowercased() == "3dsx" {
-            return Game(url: url, title: url.deletingPathExtension().lastPathComponent, gameCode: "3DSX")
+            let art = GameArt.read(url)
+            let title = art?.titleLines.first ?? url.deletingPathExtension().lastPathComponent
+            return Game(url: url, title: title, gameCode: "3DSX", art: art)
         }
         guard let handle = try? FileHandle(forReadingFrom: url),
               let header = try? handle.read(upToCount: 16), header.count == 16 else { return nil }
         let title = String(decoding: header.prefix(12).prefix { $0 != 0 }, as: UTF8.self)
         let code = String(decoding: header.suffix(4), as: UTF8.self)
-        return Game(url: url, title: title.isEmpty ? url.deletingPathExtension().lastPathComponent : title, gameCode: code)
+        let art = GameArt.read(url)
+        // The banner's full title reads better than the 12-character header name.
+        let full = art.map { a in a.titleLines.count > 1 ? a.titleLines.dropLast().joined(separator: ": ") : a.titleLines.joined() } ?? ""
+        let name = !full.isEmpty ? full : !title.isEmpty ? title : url.deletingPathExtension().lastPathComponent
+        return Game(url: url, title: name, gameCode: code, art: art)
     }
 }
