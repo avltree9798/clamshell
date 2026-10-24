@@ -82,6 +82,25 @@ import Testing
         #expect(s.pixel(128, 116) == argb(0))
     }
 
+    @Test func displayCaptureWritesThePictureToVRAM() throws {
+        let s = try scene()
+        s.command(0x40, 0)
+        s.command(0x20, Self.red)
+        s.vertex(-Self.one / 2, -Self.one / 2, 0)
+        s.vertex(Self.one / 2, -Self.one / 2, 0)
+        s.vertex(0, Self.one / 2, 0)
+        s.command(0x41)
+        s.show()
+        // Capture engine A, 256 × 192, into bank C.
+        s.bus.write32(0x0400_0064, 1 << 31 | 3 << 20 | 2 << 16 | 16)
+        s.nds.runFrame()
+        let bankC = s.nds.vram.base + 2 * 0x20000
+        func captured(_ x: Int, _ y: Int) -> UInt16 { bankC.load(fromByteOffset: (y * 256 + x) * 2, as: UInt16.self) }
+        #expect(captured(128, 96) == 0x8000 | UInt16(Self.red))
+        #expect(captured(5, 5) == 0x8000)  // the black backdrop
+        #expect(s.bus.read32(0x0400_0064) & 1 << 31 == 0)  // done after one frame
+    }
+
     @Test func nearerQuadWinsDepthTest() throws {
         let s = try scene()
         s.command(0x40, 1)

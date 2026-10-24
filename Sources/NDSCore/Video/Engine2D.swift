@@ -27,6 +27,10 @@ final class Engine2D {
     private let objMode: UnsafeMutablePointer<UInt8>
     private let objWindow: UnsafeMutablePointer<Bool>
     private let windowMasks: UnsafeMutablePointer<UInt8>
+    /// Engine A's picture for display capture when the screen shows something else.
+    private let captureLine: UnsafeMutablePointer<UInt32>
+    /// Display capture runs for a whole frame once DISPCAPCNT enables it.
+    private var capturing = false
 
     static let opaque: UInt32 = 1 << 31
     /// 3D pixels also carry a 5-bit alpha in bits 16-20.
@@ -49,6 +53,8 @@ final class Engine2D {
         objWindow.initialize(repeating: false, count: 256)
         windowMasks = .allocate(capacity: 256)
         windowMasks.initialize(repeating: 0x3F, count: 256)
+        captureLine = .allocate(capacity: 256)
+        captureLine.initialize(repeating: 0, count: 256)
     }
 
     deinit {
@@ -59,12 +65,14 @@ final class Engine2D {
         objMode.deallocate()
         objWindow.deallocate()
         windowMasks.deallocate()
+        captureLine.deallocate()
     }
 
     func reset() {
         regs = [UInt32](repeating: 0, count: regs.count)
         affineX = (0, 0)
         affineY = (0, 0)
+        capturing = false
     }
 
     // MARK: - Registers
@@ -140,8 +148,10 @@ final class Engine2D {
         }
         let enabled = s.powcnt1 & (isA ? 1 << 1 : 1 << 9) != 0
         let mode = isA ? (dispcnt >> 16) & 3 : (dispcnt >> 16) & 1
+        if isA && y == 0 { capturing = regs[0x64 / 4] & 0x8000_0000 != 0 }
         guard enabled else {
             out.update(repeating: 0xFF00_0000, count: 256)
+            if capturing { capture(y, graphics: out) }
             return
         }
         switch mode {
@@ -161,8 +171,70 @@ final class Engine2D {
                 renderNormal(y, into: out)
             }
         }
+        if capturing {
+            // Capture takes engine A's own picture even while the screen shows VRAM.
+            if mode == 1 {
+                capture(y, graphics: out)
+            } else {
+                if dispcnt & 0x80 != 0 { captureLine.update(repeating: 0xFFFF_FFFF, count: 256) } else { renderNormal(y, into: captureLine) }
+                capture(y, graphics: captureLine)
+            }
+        }
         applyMasterBrightness(out)
         advanceAffine()
+    }
+
+    // MARK: - Display capture
+
+    /// DISPCAPCNT: writes engine A's picture or the 3D layer, a VRAM bank, or a blend of
+    /// the two into a VRAM bank as RGB555. Games use it to show 3D on both screens,
+    /// rendering each screen on alternate frames and showing the capture on the other.
+    private func capture(_ y: Int, graphics: UnsafeMutablePointer<UInt32>) {
+        let cnt = regs[0x64 / 4]
+        let sizeBits = Int((cnt >> 20) & 3)
+        let width = sizeBits == 0 ? 128 : 256
+        let height = [128, 64, 128, 192][sizeBits]
+        guard y < height else { return }
+        let vram = s.vram.base
+        let writeBank = Int((cnt >> 16) & 3) * 0x20000
+        let writeStart = Int((cnt >> 18) & 3) * 0x8000 + y * width * 2
+        let readBank = Int((dispcnt >> 18) & 3) * 0x20000
+        let readStart = Int((cnt >> 26) & 3) * 0x8000 + y * 256 * 2
+        let source = (cnt >> 29) & 3
+        let eva = min(cnt & 0x1F, 16), evb = min((cnt >> 8) & 0x1F, 16)
+        let only3D = cnt & (1 << 24) != 0
+        let line3D = s.gpu3D.colorBuffer + y * 256
+
+        for x in 0..<width {
+            // Source A with its alpha bit: the picture is always opaque, the 3D layer where drawn.
+            var a: UInt32 = 0
+            if source != 1 {
+                if only3D {
+                    let p = line3D[x]
+                    a = p & Self.opaque != 0 && (p >> Self.alphaShift) & 0x1F != 0 ? 0x8000 | (p & 0x7FFF) : 0
+                } else {
+                    let c = graphics[x]
+                    a = 0x8000 | ((c >> 19) & 0x1F) | ((c >> 11) & 0x1F) << 5 | ((c >> 3) & 0x1F) << 10
+                }
+            }
+            var b: UInt32 = 0
+            if source != 0 {
+                b = UInt32(vram.load(fromByteOffset: readBank + (readStart + x * 2) & 0x1FFFE, as: UInt16.self))
+            }
+            let pixel: UInt32
+            switch source {
+            case 0: pixel = a
+            case 1: pixel = b
+            default:
+                let fa = a & 0x8000 != 0 ? eva : 0, fb = b & 0x8000 != 0 ? evb : 0
+                pixel = Self.blend(a, b, fa, fb) | (fa != 0 || fb != 0 ? 0x8000 : 0)
+            }
+            vram.storeBytes(of: UInt16(truncatingIfNeeded: pixel), toByteOffset: writeBank + (writeStart + x * 2) & 0x1FFFE, as: UInt16.self)
+        }
+        if y == height - 1 {
+            regs[0x64 / 4] &= ~0x8000_0000
+            capturing = false
+        }
     }
 
     private func advanceAffine() {
