@@ -121,6 +121,20 @@ struct GameView: View {
                     .frame(width: LayoutResolver.menuSize, height: LayoutResolver.menuSize)
                     .background(Circle().fill(.white.opacity(0.14)))
                     .place(layout.menuButton)
+                // Next to the close button while diagnostics are on; menus are hard to reach on a Mac.
+                if showDiagnostics, let runtime {
+                    Button("Copy debug report", systemImage: "doc.on.clipboard") {
+                        runtime.session.requestDebugReport { report in
+                            Task { @MainActor in UIPasteboard.general.string = report }
+                        }
+                    }
+                    .labelStyle(.iconOnly)
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(.green)
+                    .frame(width: LayoutResolver.menuSize, height: LayoutResolver.menuSize)
+                    .background(Circle().fill(.white.opacity(0.14)))
+                    .place(layout.menuButton.offsetBy(dx: 0, dy: LayoutResolver.menuSize + 8))
+                }
             }
         }
         .readPosture(hinge: $hinge, fold: $fold)
