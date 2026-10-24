@@ -128,7 +128,11 @@ final class DMAUnit {
         if !wasEnabled && channels[n].enabled {
             channels[n].internalSource = channels[n].source
             channels[n].internalDestination = channels[n].destination
-            if trigger(of: value) == .immediate { run(n) }
+            switch trigger(of: value) {
+            case .immediate: run(n)
+            case .cartridge: system?.cartridge.pumpDMA()  // the card may already have data waiting
+            default: break
+            }
         }
     }
 

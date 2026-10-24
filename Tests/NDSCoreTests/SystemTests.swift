@@ -124,4 +124,19 @@ import Testing
         #expect(bytes[0] == expected[0] && bytes[1] == expected[1] && bytes[2] == expected[2])
         #expect(bytes[1] >= 1 && bytes[1] <= 0x12)
     }
+
+    /// The SDK reads the card with a one-word repeating DMA, retriggered per word.
+    @Test func cardDMAReadsAWholeBlock() throws {
+        let nds = NDS()
+        var rom = [UInt8](repeating: 0, count: 0x10000)
+        for i in 0..<0x200 { rom[0x8000 + i] = UInt8(truncatingIfNeeded: i * 7) }
+        try nds.cartridge.load(rom)
+        nds.bus9.write32(0x0400_00B0, 0x0410_0010)
+        nds.bus9.write32(0x0400_00B4, 0x0200_0000)
+        nds.bus9.write32(0x0400_00B8, 0x8000_0000 | 5 << 27 | 1 << 26 | 1 << 25 | 2 << 23 | 1)
+        for (i, b) in [0xB7, 0x00, 0x00, 0x80, 0x00, 0, 0, 0].enumerated() { nds.bus9.write8(0x0400_01A8 + UInt32(i), UInt8(b)) }
+        nds.bus9.write32(0x0400_01A4, 0x8000_0000 | 1 << 24)
+        for i in 0..<0x200 { #expect(nds.bus9.read8(0x0200_0000 + UInt32(i)) == UInt8(truncatingIfNeeded: i * 7)) }
+        #expect(nds.bus9.read32(0x0400_01A4) & 0x8000_0000 == 0)
+    }
 }

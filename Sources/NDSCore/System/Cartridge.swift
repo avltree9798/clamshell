@@ -82,8 +82,19 @@ final class Cartridge {
             finishTransfer()
         } else {
             romControl |= 0x0080_0000
-            system?.dma9.trigger(.cartridge)
-            system?.dma7.trigger(.cartridge)
+            pumpDMA()
+        }
+    }
+
+    /// Card DMA moves one word (or a few) per "data ready" request, so keep asking
+    /// while the card has data and a card DMA channel is taking it.
+    func pumpDMA() {
+        guard let system else { return }
+        while hasData {
+            let before = bufferIndex
+            system.dma9.trigger(.cartridge)
+            system.dma7.trigger(.cartridge)
+            if bufferIndex == before { break }  // no channel is reading the card
         }
     }
 
