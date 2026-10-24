@@ -15,7 +15,9 @@ final class SPIBus {
     private var flashCommand: UInt8 = 0
     private var flashAddress: UInt32 = 0
     private var flashAddressBytes = 0
-    let firmware = Firmware.generate()
+    private var flashIDIndex = 0
+    private var flashWriteEnabled = false
+    private(set) var firmware = Firmware.generate()
 
     var touchPoint: (x: Int, y: Int)?
 
@@ -31,27 +33,72 @@ final class SPIBus {
         }
     }
 
+    /// The firmware flash, an ST M45PE20-style 256 KB SPI flash (GBATEK "DS Firmware
+    /// Serial Flash Memory"). Writes land in the image but are not kept between runs.
     private func flash(_ value: UInt8, hold: Bool) -> UInt8 {
-        defer { if !hold { flashCommand = 0 } }
+        defer {
+            if !hold {
+                // Program and erase commands clear the write-enable latch when they end.
+                if [0x02, 0x0A, 0xD8, 0xDB].contains(flashCommand) && flashAddressBytes >= 3 { flashWriteEnabled = false }
+                flashCommand = 0
+            }
+        }
         if flashCommand == 0 {
             flashCommand = value
             flashAddress = 0
             flashAddressBytes = 0
+            flashIDIndex = 0
+            switch value {
+            case 0x06: flashWriteEnabled = true
+            case 0x04: flashWriteEnabled = false
+            default: break
+            }
             return 0
         }
+        func takeAddress() -> Bool {
+            guard flashAddressBytes < 3 else { return true }
+            flashAddress = flashAddress << 8 | UInt32(value)
+            flashAddressBytes += 1
+            return false
+        }
+        let mask = UInt32(firmware.count - 1)
         switch flashCommand {
-        case 0x03:  // READ: 3 address bytes, then data
-            if flashAddressBytes < 3 {
-                flashAddress = flashAddress << 8 | UInt32(value)
-                flashAddressBytes += 1
-                return 0
-            }
-            let byte = firmware[Int(flashAddress) & (firmware.count - 1)]
+        case 0x03:  // read: 3 address bytes, then data
+            guard takeAddress() else { return 0 }
+            let byte = firmware[Int(flashAddress & mask)]
             flashAddress &+= 1
             return byte
-        case 0x05:  // read status: never busy
+        case 0x0B:  // fast read: 3 address bytes and a dummy byte, then data
+            guard takeAddress() else { return 0 }
+            if flashAddressBytes == 3 { flashAddressBytes = 4; return 0 }
+            let byte = firmware[Int(flashAddress & mask)]
+            flashAddress &+= 1
+            return byte
+        case 0x05:  // read status: bit 1 write enabled, bit 0 busy (never: writes are instant)
+            return flashWriteEnabled ? 0x02 : 0x00
+        case 0x9F:  // JEDEC ID: ST, 256 KB
+            let id: [UInt8] = [0x20, 0x40, 0x12]
+            defer { flashIDIndex += 1 }
+            return flashIDIndex < id.count ? id[flashIDIndex] : 0xFF
+        case 0x02, 0x0A:  // page program (AND into the cells) and page write (replace)
+            guard takeAddress() else { return 0 }
+            if flashWriteEnabled {
+                let i = Int(flashAddress & mask)
+                firmware[i] = flashCommand == 0x02 ? firmware[i] & value : value
+                // Programming wraps within the 256-byte page.
+                flashAddress = (flashAddress & ~0xFF) | ((flashAddress &+ 1) & 0xFF)
+            }
             return 0
-        default:
+        case 0xDB, 0xD8:  // page (256 B) and sector (64 KB) erase
+            guard flashAddressBytes < 3 else { return 0 }
+            _ = takeAddress()
+            if flashAddressBytes == 3 && flashWriteEnabled {
+                let size = flashCommand == 0xDB ? 0x100 : 0x10000
+                let start = Int(flashAddress & mask) & ~(size - 1)
+                for i in start..<min(start + size, firmware.count) { firmware[i] = 0xFF }
+            }
+            return 0
+        default:  // deep power-down (0xB9), release (0xAB) and anything else
             return 0
         }
     }

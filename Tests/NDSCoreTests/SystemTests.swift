@@ -162,4 +162,25 @@ import Testing
         #expect(spi([0x03, 0x00, 0x10, 0x00, 0x00]).suffix(2) == [0xAB, 0xCD])
         #expect(nds.batterySave?.count == 64 << 10)
     }
+
+    /// Games set the firmware flash's write-enable latch and poll the status
+    /// register until it reads back set.
+    @Test func firmwareFlashWriteEnableAndID() {
+        let nds = NDS()
+        func spi(_ bytes: [UInt8]) -> [UInt8] {
+            bytes.enumerated().map { i, b in
+                let hold: UInt16 = i < bytes.count - 1 ? 1 << 11 : 0
+                nds.bus7.write16(0x0400_01C0, 0x8000 | 1 << 8 | hold)
+                nds.bus7.write8(0x0400_01C2, b)
+                return nds.bus7.read8(0x0400_01C2)
+            }
+        }
+        #expect(spi([0x05, 0])[1] & 2 == 0)
+        _ = spi([0x06])
+        #expect(spi([0x05, 0])[1] & 2 != 0)
+        #expect(spi([0x9F, 0, 0, 0]).dropFirst() == [0x20, 0x40, 0x12])
+        _ = spi([0x0A, 0x00, 0x01, 0x00, 0x5A])
+        #expect(spi([0x03, 0x00, 0x01, 0x00, 0])[4] == 0x5A)
+        #expect(spi([0x05, 0])[1] & 2 == 0)
+    }
 }
