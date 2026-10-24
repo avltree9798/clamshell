@@ -8,6 +8,7 @@
 
 #include "carm.h"
 
+#include <stdatomic.h>
 #include <string.h>
 
 #define N_FLAG 0x80000000u
@@ -333,9 +334,13 @@ CARMExit carm_run(CARMState *s) {
     };
 #undef DP
     // Handler addresses by decode index, so dispatch is one load and one jump.
+    // Filled on first use; the flag is published only after every entry is written,
+    // so cores running on other threads never see a half-filled table.
     static void *handlers[4096];
-    if (UNLIKELY(handlers[0] == NULL)) {
+    static _Atomic int handlersReady;
+    if (UNLIKELY(!atomic_load_explicit(&handlersReady, memory_order_acquire))) {
         for (int i = 0; i < 4096; i++) handlers[i] = labels[decode_table[i]];
+        atomic_store_explicit(&handlersReady, 1, memory_order_release);
     }
 
 dispatch:
