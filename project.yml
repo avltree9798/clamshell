@@ -11,6 +11,14 @@ settings:
   base:
     SWIFT_VERSION: "6.0"
     DEVELOPMENT_TEAM: ""   # set your team to run on a device
+schemes:
+  Clamshell:
+    build:
+      targets:
+        Clamshell: all
+    # The emulator is far too slow unoptimised, so Run uses Release.
+    run:
+      config: Release
 targets:
   Clamshell:
     type: application
