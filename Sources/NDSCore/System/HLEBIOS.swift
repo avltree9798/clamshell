@@ -74,24 +74,25 @@ enum HLEBIOS {
     }
 
     // The sound tables are computed from what they stand for, not copied from the BIOS.
-    // There is no sound unit yet, so close approximations are enough.
+    // Both match the BIOS values that DualRip (MIT) lists for its sound-driver port.
 
     /// sin(i × 90° / 64) × 0x8000.
     static let sineTable: [UInt16] = (0..<64).map { i in
         UInt16(min((sin(Double(i) * .pi / 128) * 32768).rounded(), 0x7FFF))
     }
 
-    /// (2^(i/768) − 1) × 0x10000.
+    /// (2^(i/768) − 1) × 0x10000, rounded.
     static let pitchTable: [UInt16] = (0..<768).map { i in
-        UInt16((exp2(Double(i) / 768) - 1) * 65536)
+        UInt16(((exp2(Double(i) / 768) - 1) * 65536).rounded())
     }
 
-    /// 724 volume levels about 0.1 dB apart, folded into 0...127 the way the sound
-    /// driver pairs them with a channel divider.
+    /// 724 steps of 0.1 dB up to full volume (index 723 = 0 dB), as 0...127 values in
+    /// four bands: each band pairs with a channel divider (÷16, ÷4, ÷2, ÷1), so the
+    /// value is scaled up by that divider while it still fits in 7 bits.
     static let volumeTable: [UInt8] = (0..<724).map { i in
-        var value = pow(10, Double(i - 723) / 200) * 128
-        while value >= 128 { value /= 2 }
-        return UInt8(min(value.rounded(.down), 127))
+        let multiplier: Double = i < 483 ? 16 : i < 603 ? 4 : i < 663 ? 2 : 1
+        let value = (128 * multiplier * pow(10, Double(i - 723) / 200)).rounded()
+        return UInt8(min(value, 127))
     }
 
     private static func huffman<B: ARMBus>(_ bus: B, source: UInt32, destination: UInt32) {

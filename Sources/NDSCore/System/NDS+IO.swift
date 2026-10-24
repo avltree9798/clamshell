@@ -112,6 +112,8 @@ extension NDS {
         case 0x0400_0214:
             // Writing 1 acknowledges an interrupt.
             irq.iflags &= ~(v & mask)
+            // The geometry FIFO IRQ is level-triggered: it comes straight back while its condition holds.
+            if cpu == 0 { gpu3D.checkFIFOInterrupt() }
             updateIRQLines()
         default:
             return false

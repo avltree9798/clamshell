@@ -228,9 +228,11 @@ final class GPU3D {
         checkFIFOInterrupt()
     }
 
-    /// The FIFO is always empty, so either FIFO IRQ condition is always true.
+    /// The FIFO is always empty, so either FIFO IRQ condition is always true. The IRQ
+    /// is level-triggered, so this runs again whenever the flag is acknowledged.
     func checkFIFOInterrupt() {
-        if (gxstat >> 30) & 3 == 1 || (gxstat >> 30) & 3 == 2 { s.irq9.raise(IRQ.geometryFIFO) }
+        let mode = (gxstat >> 30) & 3
+        if (mode == 1 || mode == 2) && s.irq9.iflags & IRQ.geometryFIFO == 0 { s.irq9.raise(IRQ.geometryFIFO) }
     }
 
     var ramCount: UInt32 { UInt32(building.count & 0xFFF) | UInt32(vertexCount & 0x1FFF) << 16 }

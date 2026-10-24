@@ -183,4 +183,25 @@ import Testing
         #expect(spi([0x03, 0x00, 0x01, 0x00, 0])[4] == 0x5A)
         #expect(spi([0x05, 0])[1] & 2 == 0)
     }
+
+    /// Spot checks against the BIOS sound tables as DualRip lists them.
+    @Test func soundTablesMatchTheBIOS() {
+        #expect(HLEBIOS.pitchTable[3] == 178)
+        #expect(HLEBIOS.pitchTable[767] == 65418)
+        #expect(HLEBIOS.volumeTable[0] == 0 && HLEBIOS.volumeTable[1] == 1)
+        #expect(HLEBIOS.volumeTable[200] == 5 && HLEBIOS.volumeTable[209] == 6)
+        #expect(HLEBIOS.volumeTable[723] == 127 && HLEBIOS.volumeTable[718] == 121)
+    }
+
+    /// With the FIFO IRQ set to "empty", acknowledging it brings it straight back.
+    @Test func geometryFIFOInterruptIsLevelTriggered() {
+        let nds = NDS()
+        nds.bus9.write32(0x0400_0600, 2 << 30)
+        #expect(nds.bus9.read32(0x0400_0214) & IRQ.geometryFIFO != 0)
+        nds.bus9.write32(0x0400_0214, IRQ.geometryFIFO)
+        #expect(nds.bus9.read32(0x0400_0214) & IRQ.geometryFIFO != 0)
+        nds.bus9.write32(0x0400_0600, 0)
+        nds.bus9.write32(0x0400_0214, IRQ.geometryFIFO)
+        #expect(nds.bus9.read32(0x0400_0214) & IRQ.geometryFIFO == 0)
+    }
 }
