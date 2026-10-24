@@ -10,7 +10,6 @@ final class Bus7: ARMBus {
 
     var postflg: UInt32 = 0
     var powcnt2: UInt32 = 0
-    var soundRegisters = [UInt32](repeating: 0, count: 0x120 / 4)
 
     /// RAM pages for the C fast path, rebuilt when WRAMCNT changes. The ARM7 fetches
     /// what it reads, so one table serves both.
@@ -155,7 +154,7 @@ final class Bus7: ARMBus {
             return c | d | UInt32(s.wramcnt) << 8
         case 0x0400_0300: return postflg
         case 0x0400_0304: return powcnt2
-        case 0x0400_0400..<0x0400_0520: return soundRegisters[Int((a - 0x0400_0400) / 4)]
+        case 0x0400_0400..<0x0400_0520: return s.spu.read(Int(a - 0x0400_0400))
         default:
             s.noteUnhandledIO(cpu: 1, a)
             return 0
@@ -193,8 +192,7 @@ final class Bus7: ARMBus {
             if mask & 0xFF00 != 0 && (v >> 14) & 3 == 2 { s.arm7.halt() }  // HALTCNT
         case 0x0400_0304: powcnt2 = (powcnt2 & ~mask) | (v & mask & 3)
         case 0x0400_0400..<0x0400_0520:
-            let i = Int((a - 0x0400_0400) / 4)
-            soundRegisters[i] = (soundRegisters[i] & ~mask) | (v & mask)
+            s.spu.write(Int(a - 0x0400_0400), v, mask: mask)
         default: s.noteUnhandledIO(cpu: 1, a)
         }
     }

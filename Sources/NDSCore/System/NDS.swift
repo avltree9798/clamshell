@@ -216,6 +216,7 @@ public final class NDS: EmulatorCore {
     let cartridge = Cartridge()
     let spi = SPIBus()
     let rtc = RTC()
+    var spu: SPU!
 
     // Display state shared by both CPUs.
     var vcount: UInt32 = 0
@@ -238,7 +239,6 @@ public final class NDS: EmulatorCore {
     }
     var lidClosed = false
     var frameStart: UInt64 = 0
-    private var audioPhase: Double = 0
 
     public var batterySave: [UInt8]? {
         get { cartridge.backup.isEmpty ? nil : cartridge.backup }
@@ -258,6 +258,7 @@ public final class NDS: EmulatorCore {
         engineB = Engine2D(isA: false, system: self)
         gpu3D = GPU3D(system: self)
         bus7 = Bus7(system: self)
+        spu = SPU(system: self)
         arm9 = ARM(model: .arm946es, bus: bus9)
         arm7 = ARM(model: .arm7tdmi, bus: bus7)
         irq9.system = self
@@ -304,6 +305,7 @@ public final class NDS: EmulatorCore {
         engineA.reset()
         engineB.reset()
         gpu3D.reset()
+        spu.reset()
     }
 
     public func setLidClosed(_ closed: Bool) { lidClosed = closed }
@@ -322,7 +324,7 @@ public final class NDS: EmulatorCore {
         }
         frameStart = target
         frameCount += 1
-        generateSilence()
+        spu.catchUp()
     }
 
     // MARK: - Events
@@ -426,14 +428,6 @@ public final class NDS: EmulatorCore {
         let r = UInt32(rgb555 & 0x1F), g = UInt32((rgb555 >> 5) & 0x1F), b = UInt32((rgb555 >> 10) & 0x1F)
         let r8 = (r << 3) | (r >> 2), g8 = (g << 3) | (g >> 2), b8 = (b << 3) | (b >> 2)
         return 0xFF00_0000 | r8 << 16 | g8 << 8 | b8
-    }
-
-    /// Keeps audio pacing alive until the SPU is implemented.
-    private func generateSilence() {
-        audioPhase += NDSClock.audioRate * Double(NDSClock.cyclesPerFrame) / NDSClock.hz
-        let count = Int(audioPhase)
-        audioPhase -= Double(count)
-        for _ in 0..<count { audio.push(left: 0, right: 0) }
     }
 
     // MARK: - Direct boot
