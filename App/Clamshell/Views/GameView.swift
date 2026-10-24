@@ -4,6 +4,7 @@ import EmuKit
 import GameController
 import NDSCore
 import SwiftUI
+import UIKit
 
 /// Plays one game: two Metal screens placed by `LayoutResolver`, with
 /// on-screen controls unless a controller is connected.
@@ -106,6 +107,13 @@ struct GameView: View {
                 Button("Close", systemImage: "xmark") { dismiss() }
                     .contextMenu {
                         Toggle("Show diagnostics", isOn: $showDiagnostics)
+                        if let runtime {
+                            Button("Copy debug report", systemImage: "doc.on.clipboard") {
+                                runtime.session.requestDebugReport { report in
+                                    Task { @MainActor in UIPasteboard.general.string = report }
+                                }
+                            }
+                        }
                     }
                     .labelStyle(.iconOnly)
                     .font(.system(size: 14, weight: .bold))

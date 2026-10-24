@@ -37,6 +37,8 @@ final class EmulationSession: Sendable {
     private let saveRequested = Atomic<Bool>(false)
     private let lastError = Mutex<String?>(nil)
     private let diagnosticsText = Mutex<String>("")
+    private let reportRequest = Mutex<(@Sendable (String) -> Void)?>(nil)
+    private let reportDelivered = Mutex<Date?>(nil)
 
     init(romURL: URL, saveURL: URL) {
         self.romURL = romURL
@@ -47,7 +49,18 @@ final class EmulationSession: Sendable {
 
     var errorMessage: String? { lastError.withLock { $0 } }
     /// The core's state and the measured frame rate, refreshed twice a second.
-    var diagnostics: String { diagnosticsText.withLock { $0 } }
+    var diagnostics: String {
+        let text = diagnosticsText.withLock { $0 }
+        let delivered = reportDelivered.withLock { $0 }
+        guard let delivered, Date().timeIntervalSince(delivered) < 4 else { return text }
+        return text + "\nDebug report copied"
+    }
+
+    /// Builds a debug report after the next frame and hands it to `completion` on the
+    /// emulation thread.
+    func requestDebugReport(_ completion: @escaping @Sendable (String) -> Void) {
+        reportRequest.withLock { $0 = completion }
+    }
 
     func start() {
         let thread = Thread { [self] in run() }
@@ -90,6 +103,14 @@ final class EmulationSession: Sendable {
                 continue
             }
             core.runFrame()
+            if let completion = reportRequest.withLock({ request -> (@Sendable (String) -> Void)? in
+                let pending = request
+                request = nil
+                return pending
+            }) {
+                completion(core.debugReport)
+                reportDelivered.withLock { $0 = Date() }
+            }
             framesSinceReport += 1
             let elapsed = Date().timeIntervalSince(reportStart)
             if elapsed >= 0.5 {

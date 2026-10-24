@@ -96,8 +96,30 @@ public final class NDS: EmulatorCore {
     /// The last few I/O addresses neither bus handles, per CPU, for diagnostics.
     private(set) var unhandledIO: [[UInt32]] = [[], []]
     private(set) var unhandledSWI: [[UInt32]] = [[], []]
+    /// Recent I/O accesses per CPU, repeats folded together, for the debug report.
+    struct IOAccess {
+        var frame: Int
+        var pc: UInt32
+        var address: UInt32
+        var value: UInt32
+        var write: Bool
+        var repeats: Int
+    }
+    private(set) var ioLog: [[IOAccess]] = [[], []]
+    static let ioLogLength = 48
+
+    func logIO(cpu: Int, _ address: UInt32, _ value: UInt32, write: Bool) {
+        if let last = ioLog[cpu].last, last.address == address, last.value == value, last.write == write {
+            ioLog[cpu][ioLog[cpu].count - 1].repeats += 1
+            return
+        }
+        let pc = cpu == 0 ? arm9.pc : arm7.pc
+        ioLog[cpu].append(IOAccess(frame: frameCount, pc: pc, address: address, value: value, write: write, repeats: 1))
+        if ioLog[cpu].count > Self.ioLogLength { ioLog[cpu].removeFirst() }
+    }
+
     /// The last I/O register each CPU read: what a busy loop is polling.
-    var lastIORead: [UInt32] = [0, 0]
+    private func lastIORead(_ cpu: Int) -> UInt32 { ioLog[cpu].last { !$0.write }?.address ?? 0 }
     private(set) var frameCount = 0
 
     func noteUnhandledSWI(cpu: Int, _ number: UInt32) {
@@ -134,7 +156,7 @@ public final class NDS: EmulatorCore {
                      cpu("ARM7", arm7.pc, arm7.rawCPSR, arm7.halted, irq7),
                      "dispcnt A \(hex(engineA.dispcnt)) B \(hex(engineB.dispcnt)) powcnt \(hex(powcnt1, 4)) vram \(vramcnt.map { hex(UInt32($0), 2) }.joined(separator: " "))",
                      "bright A \(hex(engineA.regs[0x6C / 4] & 0xFFFF, 4)) B \(hex(engineB.regs[0x6C / 4] & 0xFFFF, 4)) backdrop A \(hex(UInt32(palette.read16(0)), 4)) B \(hex(UInt32(palette.read16(0x400)), 4)) dispstat \(hex(dispstat9, 4))",
-                     "last io read 9 \(hex(lastIORead[0])) 7 \(hex(lastIORead[1])) save \(cartridge.backupChip.kind.map { "\($0)" } ?? "?") \(cartridge.backup.count / 1024) KB",
+                     "last io read 9 \(hex(lastIORead(0))) 7 \(hex(lastIORead(1))) save \(cartridge.backupChip.kind.map { "\($0)" } ?? "?") \(cartridge.backup.count / 1024) KB",
                      "ipc sync \(hex(ipc.readSync(cpu: 0), 4))/\(hex(ipc.readSync(cpu: 1), 4)) fifo \(ipc.fifo[0].count)/\(ipc.fifo[1].count)"]
         if !unhandledIO[0].isEmpty { lines.append("io9? " + unhandledIO[0].map { hex($0) }.joined(separator: " ")) }
         if !unhandledIO[1].isEmpty { lines.append("io7? " + unhandledIO[1].map { hex($0) }.joined(separator: " ")) }
@@ -142,6 +164,45 @@ public final class NDS: EmulatorCore {
             lines.append("swi\(cpu == 0 ? 9 : 7)? " + unhandledSWI[cpu].map { String($0, radix: 16) }.joined(separator: " "))
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// Everything needed to work out where a game is stuck, as text to paste.
+    public var debugReport: String {
+        func hex(_ v: UInt32) -> String {
+            let s = String(v, radix: 16, uppercase: true)
+            return String(repeating: "0", count: max(8 - s.count, 0)) + s
+        }
+        var out = [diagnostics, ""]
+        for cpu in 0..<2 {
+            let name = cpu == 0 ? "ARM9" : "ARM7"
+            func bus(_ a: UInt32) -> UInt32 { cpu == 0 ? bus9.read32(a) : bus7.read32(a) }
+            let pc = cpu == 0 ? arm9.pc : arm7.pc, cpsr = cpu == 0 ? arm9.rawCPSR : arm7.rawCPSR
+            func reg(_ i: Int) -> UInt32 { cpu == 0 ? arm9.reg(i) : arm7.reg(i) }
+            out.append("\(name) registers")
+            out.append((0..<16).map { "r\($0)=\(hex(reg($0)))" }.joined(separator: " "))
+            out.append("cpsr=\(hex(cpsr))")
+            out.append("\(name) code around pc")
+            let codeStart = (pc & ~3) &- 0x40
+            for row in stride(from: codeStart, to: codeStart &+ 0x80, by: 16) {
+                out.append(hex(row) + ": " + (0..<4).map { hex(bus(row &+ UInt32($0 * 4))) }.joined(separator: " "))
+            }
+            out.append("\(name) stack")
+            let sp = reg(13) & ~3
+            for row in stride(from: sp, to: sp &+ 0x80, by: 16) {
+                out.append(hex(row) + ": " + (0..<4).map { hex(bus(row &+ UInt32($0 * 4))) }.joined(separator: " "))
+            }
+            out.append("\(name) recent I/O (frame pc address value)")
+            for e in ioLog[cpu] {
+                out.append("\(e.frame) \(hex(e.pc)) \(e.write ? "W" : "R") \(hex(e.address)) \(hex(e.value))\(e.repeats > 1 ? " x\(e.repeats)" : "")")
+            }
+            out.append("")
+        }
+        out.append("ipc fifocnt9 \(hex(ipc.readControl(cpu: 0))) fifocnt7 \(hex(ipc.readControl(cpu: 1)))")
+        out.append("shared main RAM 027FFC00")
+        for row in stride(from: UInt32(0x027F_FC00), to: 0x0280_0000, by: 16) {
+            out.append(hex(row) + ": " + (0..<4).map { hex(mainRAM.read32(row &+ UInt32($0 * 4))) }.joined(separator: " "))
+        }
+        return out.joined(separator: "\n")
     }
 
     let irq9 = InterruptController(cpuIndex: 0)

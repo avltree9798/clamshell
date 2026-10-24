@@ -235,7 +235,12 @@ final class Bus9: ARMBus {
     // MARK: - I/O registers
 
     func ioRead(_ a: UInt32) -> UInt32 {
-        s.lastIORead[0] = a
+        let v = ioReadUnlogged(a)
+        s.logIO(cpu: 0, a, v, write: false)
+        return v
+    }
+
+    private func ioReadUnlogged(_ a: UInt32) -> UInt32 {
         if let v = s.ioReadCommon(cpu: 0, a) { return v }
         switch a {
         case 0x0400_0000...0x0400_006C: return s.engineA.read(a - 0x0400_0000)
@@ -268,6 +273,11 @@ final class Bus9: ARMBus {
     }
 
     func ioWrite(_ a: UInt32, _ v: UInt32, mask: UInt32) {
+        s.logIO(cpu: 0, a, v & mask, write: true)
+        ioWriteUnlogged(a, v, mask: mask)
+    }
+
+    private func ioWriteUnlogged(_ a: UInt32, _ v: UInt32, mask: UInt32) {
         if s.ioWriteCommon(cpu: 0, a, v, mask: mask) { return }
         @inline(__always) func merge(_ old: UInt32) -> UInt32 { (old & ~mask) | (v & mask) }
         @inline(__always) func merge64(_ old: UInt64, high: Bool) -> UInt64 {

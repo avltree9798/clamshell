@@ -87,8 +87,11 @@ public protocol EmulatorCore: AnyObject {
 
     /// A few lines of internal state for the on-screen diagnostics readout.
     var diagnostics: String { get }
+    /// A longer dump of internal state to paste into a bug report.
+    var debugReport: String { get }
 }
 
 public extension EmulatorCore {
     var diagnostics: String { "" }
+    var debugReport: String { diagnostics }
 }
